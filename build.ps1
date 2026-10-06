@@ -9,7 +9,7 @@ $sourceFile = Join-Path $repoRoot 'GameMod\GameMod.cpp'
 $projectFile = Join-Path $repoRoot 'Launcher\Launcher.csproj'
 $nugetConfig = Join-Path $repoRoot 'NuGet.Config'
 $pointerConfig = Join-Path $repoRoot 'config\zoom-pointer.ini'
-$zoomConfig = Join-Path $repoRoot 'config\zoom.ini'
+$toolkitConfig = Join-Path $repoRoot 'config\bedrock-toolkit.ini'
 $nativeDll = Join-Path $artifacts 'GameMod.dll'
 $minHookRoot = Join-Path $repoRoot 'GameMod\vendor\minhook'
 $minHookObjectDirectory = Join-Path $artifacts 'minhook-build'
@@ -198,10 +198,10 @@ if (Test-Path -LiteralPath $pointerConfig) {
 else {
     Write-Host 'No saved Zoom pointer chain; launcher will use automatic FOV discovery.'
 }
-if (-not (Test-Path -LiteralPath $zoomConfig)) {
-    throw "Zoom controls configuration is missing: $zoomConfig"
+if (-not (Test-Path -LiteralPath $toolkitConfig)) {
+    throw "Toolkit configuration is missing: $toolkitConfig"
 }
-Copy-Item -LiteralPath $zoomConfig -Destination (Join-Path $launcherOutput 'zoom.ini') -Force
+Copy-Item -LiteralPath $toolkitConfig -Destination (Join-Path $launcherOutput 'bedrock-toolkit.ini') -Force
 try {
     Copy-Item -LiteralPath $nativeDll -Destination (Join-Path $launcherOutput 'GameMod.dll') -Force
 }

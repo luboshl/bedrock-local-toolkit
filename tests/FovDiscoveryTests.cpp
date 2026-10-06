@@ -11,6 +11,59 @@ namespace
         if (!condition) throw std::runtime_error(message);
     }
 
+    struct TemporaryToolkitConfig
+    {
+        wchar_t path[MAX_PATH]{};
+
+        TemporaryToolkitConfig()
+        {
+            wchar_t directory[MAX_PATH]{};
+            const DWORD length = GetTempPathW(static_cast<DWORD>(std::size(directory)), directory);
+            Check(length != 0 && length < std::size(directory) &&
+                GetTempFileNameW(directory, L"blt", 0, path) != 0, "temporary config path");
+        }
+
+        ~TemporaryToolkitConfig()
+        {
+            WritePrivateProfileStringW(nullptr, nullptr, nullptr, path);
+            DeleteFileW(path);
+        }
+
+        void Set(const wchar_t* section, const wchar_t* key, const wchar_t* value)
+        {
+            Check(WritePrivateProfileStringW(section, key, value, path) != FALSE, "write temporary config");
+        }
+
+        std::wstring Path() const { return path; }
+    };
+
+    void TestToolkitConfig()
+    {
+        TemporaryToolkitConfig config;
+        config.Set(L"Zoom", L"Fov", L"33.5");
+        config.Set(L"Zoom", L"TransitionDurationMs", L"275");
+        config.Set(L"Zoom", L"MouseSensitivity", L"27.5");
+        config.Set(L"Shortcuts", L"Zoom", L"Z");
+        config.Set(L"Shortcuts", L"Nametag", L"F1");
+        config.Set(L"Shortcuts", L"AlwaysDay", L"F2");
+        config.Set(L"Shortcuts", L"FullBright", L"F3");
+        config.Set(L"Shortcuts", L"StatusIndicator", L"F4");
+        config.Set(L"Shortcuts", L"SafeDetach", L"F5");
+        Check(LoadZoomConfigFromPath(config.Path()), "load [Zoom] and [Shortcuts]");
+        Check(g_zoomConfig.fov == 33.5f && g_zoomConfig.transitionDurationMs == 275 &&
+            g_zoomConfig.mouseSensitivity == 27.5f, "Zoom settings parsed");
+        Check(g_zoomConfig.zoomKey == 'Z' && g_zoomConfig.nametagKey == VK_F1 &&
+            g_zoomConfig.alwaysDayKey == VK_F2 && g_zoomConfig.fullBrightKey == VK_F3 &&
+            g_zoomConfig.indicatorKey == VK_F4 && g_zoomConfig.exitKey == VK_F5,
+            "all shortcut keys parsed");
+
+        config.Set(L"Shortcuts", L"StatusIndicator", L"NotAKey");
+        Check(!LoadZoomConfigFromPath(config.Path()), "unsupported shortcut rejected");
+        config.Set(L"Shortcuts", L"StatusIndicator", L"F4");
+        config.Set(L"Shortcuts", L"SafeDetach", L"F4");
+        Check(!LoadZoomConfigFromPath(config.Path()), "duplicate shortcuts rejected");
+    }
+
     struct Fixture
     {
         unsigned char* memory = static_cast<unsigned char*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
@@ -75,6 +128,7 @@ int main()
     {
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
+        TestToolkitConfig();
         {
             // Exercise the game's message path without installing any desktop
             // hook or injecting input into the user's applications.

@@ -26,7 +26,7 @@ internal static class Program
     private const uint RemoteCallTimeoutMs = 30_000;
 
     private sealed record ZoomConfig(float Fov, uint TransitionDurationMs, float MouseSensitivity,
-        string ZoomKey, string NametagKey, string AlwaysDayKey, string FullBrightKey, string IndicatorKey, string ExitKey);
+        string Zoom, string Nametag, string AlwaysDay, string FullBright, string StatusIndicator, string SafeDetach);
 
     private static int Main()
     {
@@ -34,11 +34,11 @@ internal static class Program
 
         try
         {
-            var zoomConfigPath = Path.Combine(AppContext.BaseDirectory, "zoom.ini");
+            var zoomConfigPath = Path.Combine(AppContext.BaseDirectory, "bedrock-toolkit.ini");
             var zoomConfig = LoadZoomConfig(zoomConfigPath);
             Console.WriteLine($"Configuration ({zoomConfigPath}): FOV {zoomConfig.Fov}, transition {zoomConfig.TransitionDurationMs} ms, " +
-                $"sensitivity {zoomConfig.MouseSensitivity}; Zoom {zoomConfig.ZoomKey}, Nametag {zoomConfig.NametagKey}, Always day {zoomConfig.AlwaysDayKey}, Full Bright {zoomConfig.FullBrightKey}, " +
-                $"indicator {zoomConfig.IndicatorKey}, detach {zoomConfig.ExitKey}.");
+                $"sensitivity {zoomConfig.MouseSensitivity}; Zoom {zoomConfig.Zoom}, Nametag {zoomConfig.Nametag}, Always day {zoomConfig.AlwaysDay}, Full Bright {zoomConfig.FullBright}, " +
+                $"indicator {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}.");
 
             var target = WaitForSupportedGame(TimeSpan.FromSeconds(90));
             Console.WriteLine($"Verified target: PID {target.ProcessId}, {target.PackageFullName}, x64.");
@@ -97,26 +97,29 @@ internal static class Program
         var defaults = new ZoomConfig(10f, 180, 12f, "C", "F7", "F6", "F8", "F9", "F10");
         if (!File.Exists(path)) return defaults;
 
-        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var inZoomSection = false;
+        var zoomValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var shortcutValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, string>? sectionValues = null;
         foreach (var rawLine in File.ReadLines(path))
         {
             var line = rawLine.Trim();
             if (line.Length == 0 || line[0] is ';' or '#') continue;
             if (line.StartsWith('[') && line.EndsWith(']'))
             {
-                inZoomSection = string.Equals(line[1..^1].Trim(), "Zoom", StringComparison.OrdinalIgnoreCase);
+                var section = line[1..^1].Trim();
+                sectionValues = string.Equals(section, "Zoom", StringComparison.OrdinalIgnoreCase) ? zoomValues :
+                    string.Equals(section, "Shortcuts", StringComparison.OrdinalIgnoreCase) ? shortcutValues : null;
                 continue;
             }
-            if (!inZoomSection) continue;
+            if (sectionValues is null) continue;
             var separator = line.IndexOf('=');
             if (separator <= 0) continue;
-            values[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+            sectionValues[line[..separator].Trim()] = line[(separator + 1)..].Trim();
         }
 
         float ReadFloat(string key, float fallback, float minimum, float maximum)
         {
-            if (!values.TryGetValue(key, out var text)) return fallback;
+            if (!zoomValues.TryGetValue(key, out var text)) return fallback;
             if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ||
                 !float.IsFinite(value) || value < minimum || value > maximum)
                 throw new InvalidDataException($"Invalid value for {key}='{text}' in {path}.");
@@ -124,20 +127,21 @@ internal static class Program
         }
         uint ReadDuration()
         {
-            if (!values.TryGetValue("TransitionDurationMs", out var text)) return defaults.TransitionDurationMs;
+            if (!zoomValues.TryGetValue("TransitionDurationMs", out var text)) return defaults.TransitionDurationMs;
             if (!uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value is < 1 or > 10_000)
                 throw new InvalidDataException($"Invalid value for TransitionDurationMs='{text}' in {path}.");
             return value;
         }
         string ReadKey(string key, string fallback) =>
-            values.TryGetValue(key, out var value) && IsSupportedKey(value) ? value.Trim().ToUpperInvariant() :
-            values.ContainsKey(key) ? throw new InvalidDataException($"Invalid key for {key}='{values[key]}' in {path}.") : fallback;
+            shortcutValues.TryGetValue(key, out var value) && IsSupportedKey(value) ? value.Trim().ToUpperInvariant() :
+            shortcutValues.ContainsKey(key) ? throw new InvalidDataException($"Invalid key for {key}='{shortcutValues[key]}' in {path}.") : fallback;
 
         var config = new ZoomConfig(ReadFloat("Fov", defaults.Fov, 1f, 120f), ReadDuration(),
             ReadFloat("MouseSensitivity", defaults.MouseSensitivity, 0f, 100f),
-            ReadKey("ZoomKey", defaults.ZoomKey), ReadKey("NametagKey", defaults.NametagKey),
-            ReadKey("AlwaysDayKey", defaults.AlwaysDayKey), ReadKey("FullBrightKey", defaults.FullBrightKey), ReadKey("IndicatorKey", defaults.IndicatorKey), ReadKey("ExitKey", defaults.ExitKey));
-        var keys = new[] { config.ZoomKey, config.NametagKey, config.AlwaysDayKey, config.FullBrightKey, config.IndicatorKey, config.ExitKey };
+            ReadKey("Zoom", defaults.Zoom), ReadKey("Nametag", defaults.Nametag),
+            ReadKey("AlwaysDay", defaults.AlwaysDay), ReadKey("FullBright", defaults.FullBright),
+            ReadKey("StatusIndicator", defaults.StatusIndicator), ReadKey("SafeDetach", defaults.SafeDetach));
+        var keys = new[] { config.Zoom, config.Nametag, config.AlwaysDay, config.FullBright, config.StatusIndicator, config.SafeDetach };
         if (keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != keys.Length)
             throw new InvalidDataException($"Keyboard shortcuts in {path} must be unique.");
         return config;

@@ -30,7 +30,9 @@ Use this software at your own risk. It is provided "as is", without warranties o
 | Status indicator | F9 | Shows or hides the local status indicator. |
 | Safe detach | F10 | Restores modified values and hooks, then detaches the module when restoration is safe. |
 
-Zoom and keyboard shortcuts are configurable in [`config/zoom.ini`](config/zoom.ini). Shortcuts must be distinct. The build script copies the configuration next to the launcher.
+Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Zoom values belong under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script copies the configuration next to the launcher.
+
+There is no automatic migration or compatibility fallback for `zoom.ini`. To retain custom settings from an older installation, rename it to `bedrock-toolkit.ini`, keep `Fov`, `TransitionDurationMs`, and `MouseSensitivity` under `[Zoom]`, and move shortcuts into `[Shortcuts]` using the feature names shown in the new file. If `bedrock-toolkit.ini` is missing, the launcher and module use their defaults.
 
 ## Compatibility
 
@@ -99,7 +101,7 @@ GitHub Actions builds the project and runs the automated tests for pull requests
 ## Troubleshooting
 
 - **The launcher rejects the game:** Check that the installed package is exactly `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe`. Other builds are not supported.
-- **A shortcut does not work:** Check [`config/zoom.ini`](config/zoom.ini) and make sure every configured shortcut is distinct.
+- **A shortcut does not work:** Check [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini) and make sure every configured shortcut is distinct and listed under `[Shortcuts]`.
 - **A feature behaves differently than expected:** Check its verification status in [Features](#features); some behavior has not yet been tested in-game.
 - **The build fails:** Confirm that the x64 MSVC tools, Windows SDK, and .NET 10 SDK are installed, then review the build output.
 

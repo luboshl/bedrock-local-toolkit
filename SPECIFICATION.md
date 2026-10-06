@@ -17,7 +17,7 @@ The only supported package is `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8
 | Safe detach | F10 | Restore modified values and hooks, then detach the module. Restoration must not be forced if code has been modified by another party or a bridge is still running. |
 | Full Bright | F8 | Changes temporary parameters of the standard local light texture, not gamma, player state, or saved lighting. The user confirmed it works; other rendering modes and interaction with Always day have not been verified. |
 
-Zoom values are configured in `[Zoom]` and feature shortcuts in `[Shortcuts]` in `config\bedrock-toolkit.ini`; the build script copies it next to the launcher. All shortcuts must be supported and distinct. There is no automatic migration or compatibility fallback for `zoom.ini`: existing custom settings must be moved manually into the new file and section/key format. If `bedrock-toolkit.ini` is missing, the launcher and module use their defaults. If sensitivity or FOV cannot be safely identified, the module must not attempt a blind write.
+Zoom values are configured in `[Zoom]` and feature shortcuts in `[Shortcuts]` in `config\bedrock-toolkit.ini`; the build script copies it next to the launcher. All shortcuts must be supported and distinct. If `bedrock-toolkit.ini` is missing, the launcher and module use their defaults. If sensitivity or FOV cannot be safely identified, the module must not attempt a blind write.
 
 ## Security and Implementation Requirements
 

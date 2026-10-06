@@ -32,8 +32,6 @@ Use this software at your own risk. It is provided "as is", without warranties o
 
 Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Zoom values belong under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script copies the configuration next to the launcher.
 
-There is no automatic migration or compatibility fallback for `zoom.ini`. To retain custom settings from an older installation, rename it to `bedrock-toolkit.ini`, keep `Fov`, `TransitionDurationMs`, and `MouseSensitivity` under `[Zoom]`, and move shortcuts into `[Shortcuts]` using the feature names shown in the new file. If `bedrock-toolkit.ini` is missing, the launcher and module use their defaults.
-
 ## Compatibility
 
 - **Operating system:** Windows, x64.

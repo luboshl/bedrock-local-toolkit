@@ -265,7 +265,7 @@ namespace
     std::wstring g_nametagLogPath;
     std::wstring g_alwaysDayLogPath;
     std::wstring g_fullBrightLogPath;
-    const wchar_t* g_overlayMessage = L"Local world: Zoom | Full Bright | Always day | Nametag | exit (see zoom.ini)";
+    const wchar_t* g_overlayMessage = L"Local world: Zoom | Full Bright | Always day | Nametag | exit (see bedrock-toolkit.ini)";
     COLORREF g_overlayTextColor = RGB(135, 255, 170);
 
     void SetOverlayMessage(const wchar_t* message, COLORREF color)
@@ -606,11 +606,11 @@ namespace
         return true;
     }
 
-    bool ReadZoomConfigValue(const wchar_t* key, std::wstring& value, const std::wstring& configPath)
+    bool ReadToolkitConfigValue(const wchar_t* section, const wchar_t* key, std::wstring& value, const std::wstring& configPath)
     {
         wchar_t buffer[128]{};
         const DWORD length = GetPrivateProfileStringW(
-            L"Zoom", key, L"", buffer, static_cast<DWORD>(std::size(buffer)), configPath.c_str());
+            section, key, L"", buffer, static_cast<DWORD>(std::size(buffer)), configPath.c_str());
         if (length == 0 || length >= std::size(buffer) - 1) return false;
         value.assign(buffer, length);
         return true;
@@ -704,11 +704,11 @@ namespace
         const size_t separator = configPath.find_last_of(L"\\/");
         if (separator == std::wstring::npos) return false;
         configPath.resize(separator + 1);
-        configPath += L"zoom.ini";
+        configPath += L"bedrock-toolkit.ini";
 
         ZoomConfig loaded;
         std::wstring value;
-        if (ReadZoomConfigValue(L"Fov", value, configPath))
+        if (ReadToolkitConfigValue(L"Zoom", L"Fov", value, configPath))
         {
             wchar_t* end = nullptr;
             value = TrimWhitespace(value);
@@ -717,7 +717,7 @@ namespace
                 parsed < kZoomMinimumFov || parsed > kZoomMaximumFov) return false;
             loaded.fov = parsed;
         }
-        if (ReadZoomConfigValue(L"TransitionDurationMs", value, configPath))
+        if (ReadToolkitConfigValue(L"Zoom", L"TransitionDurationMs", value, configPath))
         {
             value = TrimWhitespace(value);
             wchar_t* end = nullptr;
@@ -727,7 +727,7 @@ namespace
                 return false;
             loaded.transitionDurationMs = parsed;
         }
-        if (ReadZoomConfigValue(L"MouseSensitivity", value, configPath))
+        if (ReadToolkitConfigValue(L"Zoom", L"MouseSensitivity", value, configPath))
         {
             value = TrimWhitespace(value);
             wchar_t* end = nullptr;
@@ -740,11 +740,11 @@ namespace
         const auto readKey = [&configPath](const wchar_t* name, int& target)
         {
             std::wstring keyName;
-            return !ReadZoomConfigValue(name, keyName, configPath) || ParseVirtualKey(keyName, target);
+            return !ReadToolkitConfigValue(L"Shortcuts", name, keyName, configPath) || ParseVirtualKey(keyName, target);
         };
-        if (!readKey(L"ZoomKey", loaded.zoomKey) || !readKey(L"NametagKey", loaded.nametagKey) ||
-            !readKey(L"AlwaysDayKey", loaded.alwaysDayKey) || !readKey(L"FullBrightKey", loaded.fullBrightKey) ||
-            !readKey(L"IndicatorKey", loaded.indicatorKey) || !readKey(L"ExitKey", loaded.exitKey)) return false;
+        if (!readKey(L"Zoom", loaded.zoomKey) || !readKey(L"Nametag", loaded.nametagKey) ||
+            !readKey(L"AlwaysDay", loaded.alwaysDayKey) || !readKey(L"FullBright", loaded.fullBrightKey) ||
+            !readKey(L"StatusIndicator", loaded.indicatorKey) || !readKey(L"SafeDetach", loaded.exitKey)) return false;
         const int keys[] = {loaded.zoomKey, loaded.nametagKey, loaded.alwaysDayKey, loaded.fullBrightKey,
             loaded.indicatorKey, loaded.exitKey};
         for (size_t i = 0; i < std::size(keys); ++i)
@@ -2481,7 +2481,7 @@ namespace
         {
         case FovScanResult::Unique:
             event = "ready";
-            SetOverlayMessage(L"Zoom ready; shortcuts are configurable in zoom.ini", RGB(135, 255, 170));
+            SetOverlayMessage(L"Zoom ready; shortcuts are configurable in bedrock-toolkit.ini", RGB(135, 255, 170));
             break;
         case FovScanResult::None:
             event = "not-found";

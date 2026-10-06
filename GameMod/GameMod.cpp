@@ -695,17 +695,8 @@ namespace
         CloseHandle(file);
     }
 
-    bool LoadZoomConfig()
+    bool LoadZoomConfigFromPath(const std::wstring& configPath)
     {
-        wchar_t modulePath[MAX_PATH]{};
-        const DWORD length = GetModuleFileNameW(g_module, modulePath, static_cast<DWORD>(std::size(modulePath)));
-        if (length == 0 || length >= std::size(modulePath)) return false;
-        std::wstring configPath(modulePath, length);
-        const size_t separator = configPath.find_last_of(L"\\/");
-        if (separator == std::wstring::npos) return false;
-        configPath.resize(separator + 1);
-        configPath += L"bedrock-toolkit.ini";
-
         ZoomConfig loaded;
         std::wstring value;
         if (ReadToolkitConfigValue(L"Zoom", L"Fov", value, configPath))
@@ -752,6 +743,19 @@ namespace
                 if (keys[i] == keys[j]) return false;
         g_zoomConfig = loaded;
         return true;
+    }
+
+    bool LoadZoomConfig()
+    {
+        wchar_t modulePath[MAX_PATH]{};
+        const DWORD length = GetModuleFileNameW(g_module, modulePath, static_cast<DWORD>(std::size(modulePath)));
+        if (length == 0 || length >= std::size(modulePath)) return false;
+        std::wstring configPath(modulePath, length);
+        const size_t separator = configPath.find_last_of(L"\\/");
+        if (separator == std::wstring::npos) return false;
+        configPath.resize(separator + 1);
+        configPath += L"bedrock-toolkit.ini";
+        return LoadZoomConfigFromPath(configPath);
     }
 
     bool LoadFovPointerConfig()

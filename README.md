@@ -21,14 +21,14 @@ Use this software at your own risk. It is provided "as is", without warranties o
 | Zoom | C (hold), mouse wheel | Smooth local FOV transition; the wheel adjusts the target FOV. FOV and sensitivity are changed only after their targets are uniquely verified. The latest mouse input path has not yet been verified in-game. |
 | Always day | F6 | Changes the appearance of profiled local rendering paths; does not change world time or simulation. Basic brightening has been verified. The sun, stars, clouds, and disable-time restoration still need in-game visual verification. |
 | Nametag | F7 | Displays a custom name in third-person views. Verified in a local game. |
-| Full Bright | F10 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
+| Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
 
 ### Utility controls
 
 | Control | Key (default) | Behavior |
 | --- | --- | --- |
-| Status indicator | F8 | Shows or hides the local status indicator. |
-| Safe detach | F9 | Restores modified values and hooks, then detaches the module when restoration is safe. |
+| Status indicator | F9 | Shows or hides the local status indicator. |
+| Safe detach | F10 | Restores modified values and hooks, then detaches the module when restoration is safe. |
 
 Zoom and keyboard shortcuts are configurable in [`config/zoom.ini`](config/zoom.ini). Shortcuts must be distinct. The build script copies the configuration next to the launcher.
 

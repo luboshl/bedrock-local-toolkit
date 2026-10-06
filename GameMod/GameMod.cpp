@@ -51,9 +51,9 @@ namespace
         int zoomKey = 'C';
         int nametagKey = VK_F7;
         int alwaysDayKey = VK_F6;
-        int fullBrightKey = VK_F10;
-        int indicatorKey = VK_F8;
-        int exitKey = VK_F9;
+        int fullBrightKey = VK_F8;
+        int indicatorKey = VK_F9;
+        int exitKey = VK_F10;
     };
     ZoomConfig g_zoomConfig;
     constexpr float kFovMatchTolerance = fov::kTolerance;
@@ -2832,9 +2832,9 @@ namespace
         LONG64 lastOwnChecks = 0;
         bool f6WasDown = false;
         bool f7WasDown = (GetAsyncKeyState(g_zoomConfig.nametagKey) & 0x8000) != 0;
-        bool f8WasDown = false;
+        bool indicatorWasDown = false;
         bool escapeWasDown = false;
-        bool f9WasDown = false;
+        bool detachWasDown = false;
         bool zoomNeedsRelease = false;
         bool stopWhenRestored = false;
         ULONGLONG lastRawApiHookScanAt = 0;
@@ -2999,8 +2999,8 @@ namespace
                 }
                 f7WasDown = f7Down;
 
-                const bool f8Down = (GetAsyncKeyState(g_zoomConfig.indicatorKey) & 0x8000) != 0;
-                if (f8Down && !f8WasDown)
+                const bool indicatorDown = (GetAsyncKeyState(g_zoomConfig.indicatorKey) & 0x8000) != 0;
+                if (indicatorDown && !indicatorWasDown)
                 {
                     const LONG newVisibility = InterlockedCompareExchange(&g_indicatorVisible, 0, 0) == 0 ? 1 : 0;
                     InterlockedExchange(&g_indicatorVisible, newVisibility);
@@ -3014,10 +3014,10 @@ namespace
                         ShowWindow(g_overlayWindow, SW_HIDE);
                     }
                 }
-                f8WasDown = f8Down;
+                indicatorWasDown = indicatorDown;
 
-                const bool f9Down = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
-                if (f9Down && !f9WasDown)
+                const bool detachDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
+                if (detachDown && !detachWasDown)
                 {
                     if (!g_zoom.active)
                     {
@@ -3032,7 +3032,7 @@ namespace
                         UpdateOverlayBounds(gameWindow);
                     }
                 }
-                f9WasDown = f9Down;
+                detachWasDown = detachDown;
 
                 if (InterlockedCompareExchange(&g_indicatorVisible, 0, 0) != 0)
                 {
@@ -3052,12 +3052,12 @@ namespace
                     SetOverlayMessage(L"Restoring original FOV after focus loss", RGB(135, 255, 170));
                 }
 
-                f8WasDown = false;
+                indicatorWasDown = false;
                 brightWasDown = (GetAsyncKeyState(g_zoomConfig.fullBrightKey) & 0x8000) != 0;
                 dayWasDown = (GetAsyncKeyState(g_zoomConfig.alwaysDayKey) & 0x8000) != 0;
                 f7WasDown = (GetAsyncKeyState(g_zoomConfig.nametagKey) & 0x8000) != 0;
                 escapeWasDown = false;
-                f9WasDown = false;
+                detachWasDown = false;
                 if (IsWindowVisible(g_overlayWindow))
                 {
                     ShowWindow(g_overlayWindow, SW_HIDE);

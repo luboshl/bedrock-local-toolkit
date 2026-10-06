@@ -202,7 +202,7 @@ int main()
         Check(!fov::MayActivate(true, true, true, false, false, false, true), "Escape blocks pending activation");
         Check(!fov::MayActivate(true, true, false, true, false, false, true), "release required after refocus/Escape");
         Check(!fov::MayActivate(true, true, false, false, true, false, true), "restore pending blocks activation");
-        Check(!fov::MayActivate(true, true, false, false, false, true, true), "F9 blocks pending activation");
+        Check(!fov::MayActivate(true, true, false, false, false, true, true), "stopping blocks pending activation");
         Check(!fov::MayActivate(true, true, false, false, false, false, false), "unverified result blocks activation");
         std::puts("FOV discovery tests passed: unique/multiple/missing/timeout, object identity, protected memory, CAS/restore, pending input and local wheel messages.");
         return 0;

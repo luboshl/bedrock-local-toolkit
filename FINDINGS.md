@@ -1,0 +1,52 @@
+# Persistent Technical Findings
+
+This document preserves findings that explain the current design or prevent failed approaches from being repeated. It is not a chronological work log. The current scope and verification status are in [SPECIFICATION.md](SPECIFICATION.md).
+
+## Memory Targeting and Compatibility
+
+- Process addresses and pointer chains derived from a single session are not stable across launches or updates. A saved chain may fail after a restart and must not be the sole basis for a write. Discovery must confirm the correct object, its structure, and uniqueness.
+- An FOV value alone is not enough to identify a target: the game may contain duplicates or nearby numeric values. Do not write when there are no candidates or multiple candidates, a read is incomplete, a timeout occurs, or code has changed.
+- It is not safe to search for mouse sensitivity as an arbitrary float. In the supported build, verify the named `FloatOption` (`ctrl_sensitivity2`, `sensitivity`, `options.sensitivity`), its vtable, and the live value range. The previously tested `Options+0x1BF4` was not the correct target and must not be used.
+- The profile must match the exact package/PE and expected instructions. Matching an old signature or an address from another version does not authorize a write.
+
+## Reference Profile for the Supported Build
+
+The following addresses are only a reference map for comparison with the current source profile and troubleshooting the exact `1.26.5203.0` x64 build. They are not a stable interface or instructions for use with another version. The PE profile in code has timestamp `0x6AB54E37` and image size `0x12C01000`; the target is rejected on any mismatch.
+
+- **FOV and sensitivity:** `GameMod\FovDiscovery.h` contains the vtable RVAs and semantic checks for named game options. Sensitivity is a `FloatOption` with key `ctrl_sensitivity2`, name `sensitivity`, and label `options.sensitivity`; the verified live value is the wrapper at `+0x18`. The previously tested `Options+0x1BF4` and candidate `0x2D44` were not the correct target.
+- **GameInput and mouse wheel:** The verified input uses GameInput V2 `GetMouseState` (vtable index 14; V0 uses the distinct index 16). The game path calls `GetCurrentReading` at RVA `0x8BDF8` (return `0x8BDFE`), calculates the `wheelY` delta at `0x8CD5F`, processes float scrolling through `0x2D1560` (return `0x8CE09`), and handles type 4 scroll events through `0x361AD0` (return `0x8CE40`). The V2 structure is `0x38` bytes, with `wheelY` at `+0x30`. Cumulative values are preserved; only verified scroll paths are filtered.
+- **Always day:** The native day-cycle calculation starts at RVA `0x2312080`; the hook at `0x2312083` replaces `imul rcx,rax,0x57619F1`. Its twelve direct renderer return addresses are `0x4677B67`, `0x467A9C6`, `0x4682F9E`, `0x4684394`, `0x468501D`, `0x468528D`, `0x46ACF9F`, `0x46AD332`, `0x46ADF3E`, `0x46AE7A4`, `0x46AED1A`, and `0x4711CD0`. The noon input is tick `6000`, fraction `0`; world simulation itself is unchanged.
+- **Always day — terrain and sky:** The light-texture parameter producer is at `0x6618100`, the shared brightness calculation at `0x230E3C0`, and the calling rendering context returns at `0x66181EB`. The day cycle inside the shared function returns at `0x230E463`; verifying the parent call limits the change to the light texture. The separate sky angle is calculated in the context returning at `0x46ADF3E`; star brightness is calculated at `0x62361A0` and stored at `0x46AE70C`. The standard cloud path loads `CloudColor` at `0x5F3B0C6` from the rendering path starting at `0x5F3ACE0`; the uniform name is at `0xEBFFFA7` and its binding at `0x11E435C8`. The profile preserves alpha and changes only temporary rendering inputs.
+- **Full Bright:** The parameter producer is at `0x6618100`, the standard light-texture generator at `0x66185A0`, and the eight-byte epilogue patch at `0x6618523`. The modification changes only temporary brightening parameters; gamma, daylight brightness, player light, and saved lighting remain untouched.
+
+The exact expected bytes, call contexts, and validation rules are in the versioned headers `GameMod\*Profile.h`; these are the source of truth for the current build. For a new version, the addresses above are only reference points for comparison. The diagnostic scripts are pinned to the same build and require corresponding updates and revalidation before use with a new build.
+
+## Input and GameInput
+
+- `WH_MOUSE_LL` delivers input synchronously to the thread that installed the hook and also captures movement outside the game. If that thread scans memory or sleeps, it can delay even the desktop cursor. Therefore, the global low-level mouse hook is not used; input is captured only on local game paths.
+- GameInput V2 returns `positionX` and `positionY` as cumulative relative coordinates for each device separately. A shared accumulator or returning modified coordinates when there is no raw movement caused false camera movement. Scaling state must therefore be separate per device identity and continuous when enabled or disabled.
+- `wheelY` is cumulative device state, not an individual wheel event. Overwriting it with zero and then restoring the original constant created artificial hotbar scrolling even when the user had not moved the wheel. The correct fix preserves the original cumulative value and suppresses only the derived scroll event on verified game paths.
+- GameInput V0 and V2 have different interfaces and structure layouts. Verify the correct version and specific read path; do not mix up vtable indexes or assume input passes through Windows messages.
+- `WM_POINTERWHEEL`, like `WM_MOUSEWHEEL`, carries a signed delta in the high word of `wParam`. When forwarding it to Zoom, preserve the sign and partial steps, and leave the message unchanged when Zoom is inactive.
+- `WH_KEYBOARD_LL` alone did not capture every in-game path for the Zoom key. Filtering must account for the input interfaces actually in use and verify that the key does not trigger an in-game action at the same time as Zoom.
+
+Previous fixes for hotbar scrolling and false camera movement were verified in a live game. However, after the global hook was later removed, desktop mouse response and the Zoom mouse wheel were not practically reverified; see [SPECIFICATION.md](SPECIFICATION.md).
+
+## Local Rendering
+
+- The day-cycle calculation is shared by multiple calls. Changing its result globally also affects non-rendering uses; Always day therefore supplies noon only to approved rendering calls. The shared brightness calculation also requires validation of the parent-call context so the change does not affect other uses.
+- The first set of direct calls brightened the sky but did not cover daylight on terrain. The light texture has a separate path with its own brightness calculation; modifying the texture's entire result would remove the distinction between sky and block lighting. Each path therefore requires separate profiling and verification.
+- The sun/moon angle, star brightness, and cloud color are additional independent rendering inputs, not automatic consequences of changing the day cycle. When changing clouds, preserve alpha and the original rendering description. The new visual behavior of these paths has not yet been verified in-game.
+- Full Bright should change only temporary parameters of the native light texture, not gamma, player effects, or saved lighting. Depth testing and geometry occlusion should remain unchanged.
+- Nametag uses the game's original rendering path. Depth testing must apply to both text and background; do not change persistent actor state for it.
+
+## Hooks, Restoration, and Evidence
+
+- Before installation, verify the expected original bytes and page protection. Prepare and restore multiple related patches in a coordinated way; if another party has changed the code, refuse to overwrite it.
+- Before freeing a bridge, prevent new callbacks, wait for those already running, and check that no game thread is executing instructions in the bridge. If restoration fails, the module must remain loaded to prevent execution from freed memory.
+- Isolated tests can execute the actual emitted x64 bridges on synthetic pages and verify the ABI, registers, flags, and restoration. They do not replace checking behavior in a real process or visually verifying the game.
+- A prepared profile, installed hook, or increasing diagnostic counter does not by itself prove correct behavior. Always distinguish profile rejection, an executed callback, a passing test, and a confirmed in-game result.
+
+## Dependencies
+
+MinHook source is included in the repository under `GameMod\vendor\minhook`, including its license, and is built locally. Add another external dependency only after verifying its origin, version, license, sources, and transitive dependencies; do not use its precompiled DLLs or non-public code.

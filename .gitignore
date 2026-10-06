@@ -1,0 +1,4 @@
+/artifacts/
+**/bin/
+**/obj/
+/diagnostics/__pycache__/

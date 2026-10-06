@@ -1,0 +1,48 @@
+name: Build and draft release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build and test
+        shell: pwsh
+        run: .\build.ps1 -Test
+
+      - name: Package and create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+              throw "Release tag must use vMAJOR.MINOR.PATCH format: $tag"
+          }
+
+          $licenseDirectory = Join-Path 'artifacts\launcher' 'licenses'
+          New-Item -ItemType Directory -Path $licenseDirectory -Force | Out-Null
+          Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $licenseDirectory 'bedrock-local-toolkit-MIT.txt')
+          Copy-Item -LiteralPath 'GameMod\vendor\minhook\LICENSE.txt' -Destination (Join-Path $licenseDirectory 'MinHook.txt')
+
+          $archive = Join-Path $env:RUNNER_TEMP "bedrock-local-toolkit-$tag-win-x64.zip"
+          Compress-Archive -Path 'artifacts\launcher\*' -DestinationPath $archive -CompressionLevel Optimal
+
+          & gh release create $tag $archive --draft --generate-notes --title $tag
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create draft GitHub Release for $tag."
+          }

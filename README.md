@@ -113,10 +113,10 @@ The repository includes MinHook source under [`GameMod/vendor/minhook/`](GameMod
 
 ## Project documentation
 
+- [`AGENTS.md`](AGENTS.md) — repository guidelines for development.
 - [`SPECIFICATION.md`](SPECIFICATION.md) — project scope, security requirements, and verification limits.
 - [`FINDINGS.md`](FINDINGS.md) — technical findings and design rationale.
 - [`diagnostics/`](diagnostics/) — read-only diagnostic tools for the supported game build.
-- [`AGENTS.md`](AGENTS.md) — repository guidelines for development.
 
 ## License
 

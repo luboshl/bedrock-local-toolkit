@@ -84,6 +84,10 @@ git push origin v1.0.0
 
 The workflow builds and tests the project, then creates a draft GitHub Release with generated notes and a `win-x64` ZIP containing the launcher and its required files. Review the draft and its asset on GitHub, then publish it when ready. The ZIP contains the framework-dependent launcher, which requires the .NET 10 runtime.
 
+## Continuous integration
+
+GitHub Actions builds the project and runs the automated tests for pull requests targeting `main` and every push to `main`. It uses the same `.\build.ps1 -Test` command documented in [Build from source](#build-from-source).
+
 ## Safety and limitations
 
 - Use this project only in a local single-player world. Multiplayer is unsupported.

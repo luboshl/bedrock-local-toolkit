@@ -3,9 +3,10 @@
 public InvokeAlwaysDayTime, AlwaysDayTimeContinue, InvokeAlwaysDayRender, AlwaysDayRenderContinue
 InvokeAlwaysDayTime PROC
     push rbx
-    sub rsp,80h
+    sub rsp,100h
     mov rbx,rdx
     mov qword ptr [rsp+58h],r9
+    mov qword ptr [rsp+0A8h],r9
     movsxd rax,dword ptr [rbx]
     movss xmm2,dword ptr [rbx+4]
     mov r11,33445566778899AAh
@@ -17,7 +18,7 @@ AlwaysDayTimeContinue PROC
     mov qword ptr [rbx+16],rcx
     mov qword ptr [rbx+24],r11
     movdqu xmmword ptr [rbx+32],xmm2
-    add rsp,88h
+    add rsp,108h
     pop rbx
     ret
 AlwaysDayTimeContinue ENDP

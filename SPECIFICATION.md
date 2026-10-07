@@ -11,7 +11,7 @@ The only supported package is `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8
 | Feature | Control | Behavior and verification status |
 | --- | --- | --- |
 | Zoom | C (hold), mouse wheel | Local FOV with a transition, restored when the key is released, Esc is pressed, or focus is lost. FOV and sensitivity change only after the target settings have been uniquely verified. The current input path has not yet been verified in-game since the global mouse hook was removed. |
-| Always day | F6 | Noon is supplied only to profiled local rendering paths; actual world time and simulation are unchanged. Basic brightening of the sky and terrain was verified at night. The new sun, star, and cloud changes, as well as restoration when disabled, have not yet been visually verified. |
+| Always day | F6 | Keeps the local sun overhead at noon, the moon below the horizon, and the sky in its daytime phase without sunrise/sunset transitions. Changes only profiled temporary rendering inputs; world time continues normally. Basic brightening of the sky and terrain was verified at night. Celestial position, sky colours, stars, clouds, and restoration when disabled have not yet been visually verified. |
 | Nametag | F7 | Custom name in both third-person views; uses the original renderer and depth testing for both text and background. Verified in a local game. |
 | Status indicator | F9 | Show or hide the local indicator. |
 | Safe detach | F10 | Restore modified values and hooks, then detach the module. Restoration must not be forced if code has been modified by another party or a bridge is still running. |

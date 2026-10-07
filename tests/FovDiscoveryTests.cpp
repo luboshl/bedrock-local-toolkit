@@ -127,6 +127,48 @@ namespace
         void Value(float value) { std::memcpy(memory + 1048, &value, 4); }
     };
 
+    void TestZoomWheelTransitionRetargeting()
+    {
+        Fixture fixture;
+        const ULONGLONG originalDuration = g_zoomConfig.transitionDurationMs;
+        fixture.Value(50.0f);
+        g_zoom = {};
+        g_zoom.target = fixture.target;
+        g_zoom.originalValue = 70.0f;
+        g_zoom.active = true;
+        g_zoom.originalMinimumValue = kZoomMinimumFov;
+        g_zoom.currentZoomValue = 45.0f;
+        g_zoom.displayedValue = 50.0f;
+        g_zoom.transitionStartValue = 70.0f;
+        g_zoom.transitionTargetValue = 45.0f;
+        g_zoom.transitionStartedAt = GetTickCount64() - 25;
+        g_zoom.transitionActive = true;
+        g_zoomConfig.transitionDurationMs = 100;
+        g_zoomRestorePending = false;
+
+        Check(ScheduleZoomWheelTransition(g_zoom, 1, GetTickCount64()),
+            "wheel step schedules a new transition");
+        Check(g_zoom.displayedValue == 50.0f && fixture.Value() == 50.0f,
+            "wheel step leaves the displayed FOV unchanged immediately");
+        Check(g_zoom.transitionTargetValue == 40.0f && g_zoom.transitionActive &&
+            g_zoom.transitionStartValue == 50.0f,
+            "wheel step retargets the active transition from the displayed FOV");
+
+        g_zoom.transitionStartedAt = GetTickCount64() - 50;
+        AdvanceZoomTransition();
+        Check(fixture.Value() > 40.0f && fixture.Value() < 50.0f,
+            "retargeted transition advances toward its new target");
+
+        g_zoom.transitionStartedAt = GetTickCount64() - g_zoomConfig.transitionDurationMs;
+        AdvanceZoomTransition();
+        Check(fixture.Value() == 40.0f && g_zoom.currentZoomValue == 40.0f &&
+            !g_zoom.transitionActive,
+            "retargeted transition reaches and records its new target");
+        g_zoom = {};
+        g_zoomConfig.transitionDurationMs = originalDuration;
+        g_zoomRestorePending = false;
+    }
+
     void CompleteScan()
     {
         Check(StartFovScan(), "scan starts");
@@ -148,6 +190,7 @@ int main()
         g_supportedBuild = true;
         TestToolkitConfig();
         TestZoomTransitionInterpolation();
+        TestZoomWheelTransitionRetargeting();
         {
             // Exercise the game's message path without installing any desktop
             // hook or injecting input into the user's applications.

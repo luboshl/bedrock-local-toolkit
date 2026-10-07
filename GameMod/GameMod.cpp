@@ -109,6 +109,21 @@ namespace
         bool restoring = false;
     };
 
+    bool ScheduleZoomWheelTransition(FovZoomState& zoom, LONG steps, ULONGLONG startedAt)
+    {
+        const float requested = zoom.currentZoomValue - static_cast<float>(steps) * kZoomWheelStep;
+        const float nextValue = (std::clamp)(requested, kZoomMinimumFov, kZoomMaximumFov);
+        if (std::fabs(nextValue - zoom.transitionTargetValue) < kFovMatchTolerance) return false;
+
+        zoom.currentZoomValue = nextValue;
+        zoom.transitionStartValue = zoom.displayedValue;
+        zoom.transitionTargetValue = nextValue;
+        zoom.transitionStartedAt = startedAt;
+        zoom.transitionActive = true;
+        zoom.restoring = false;
+        return true;
+    }
+
     struct ZoomSensitivityState
     {
         fov::Target target;
@@ -1284,11 +1299,6 @@ namespace
             return;
         }
 
-        const float requested = g_zoom.currentZoomValue -
-            static_cast<float>(steps) * kZoomWheelStep;
-        const float nextValue = (std::clamp)(requested, kZoomMinimumFov, kZoomMaximumFov);
-        if (std::fabs(nextValue - g_zoom.transitionTargetValue) < kFovMatchTolerance) return;
-
         float liveValues[5]{};
         if (!ReadFovPattern(g_zoom.target.pattern, liveValues) ||
             std::fabs(liveValues[2] - g_zoom.displayedValue) >= kFovMatchTolerance)
@@ -1301,12 +1311,7 @@ namespace
             return;
         }
 
-        g_zoom.currentZoomValue = nextValue;
-        g_zoom.transitionStartValue = g_zoom.displayedValue;
-        g_zoom.transitionTargetValue = nextValue;
-        g_zoom.transitionStartedAt = GetTickCount64();
-        g_zoom.transitionActive = true;
-        g_zoom.restoring = false;
+        if (!ScheduleZoomWheelTransition(g_zoom, steps, GetTickCount64())) return;
         float verify[5]{};
         if (!ReadVerifiedTarget(g_zoom.target.options, current, verify) ||
             !fov::SameTarget(current, g_zoom.target) ||

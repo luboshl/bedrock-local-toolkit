@@ -64,6 +64,24 @@ namespace
         Check(!LoadZoomConfigFromPath(config.Path()), "duplicate shortcuts rejected");
     }
 
+    void TestZoomTransitionInterpolation()
+    {
+        Check(InterpolateZoomFov(70.0f, 10.0f, 0, 50) == 70.0f,
+        "zoom transition begins at its starting FOV");
+        Check(std::fabs(InterpolateZoomFov(70.0f, 10.0f, 10, 40) - 60.625f) < 0.001f,
+        "zoom transition eases in");
+        Check(std::fabs(InterpolateZoomFov(70.0f, 10.0f, 20, 40) - 40.0f) < 0.001f,
+        "zoom transition reaches the midpoint");
+        Check(std::fabs(InterpolateZoomFov(70.0f, 10.0f, 30, 40) - 19.375f) < 0.001f,
+        "zoom transition eases out");
+        Check(InterpolateZoomFov(70.0f, 10.0f, 50, 50) == 10.0f &&
+        InterpolateZoomFov(70.0f, 10.0f, 10'000, 10'000) == 10.0f,
+        "zoom transition reaches its target for different durations");
+        Check(InterpolateZoomFov(70.0f, 10.0f, 2'500, 10'000) ==
+        InterpolateZoomFov(70.0f, 10.0f, 10, 40),
+        "zoom easing is independent of the configured duration");
+    }
+
     struct Fixture
     {
         unsigned char* memory = static_cast<unsigned char*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
@@ -129,6 +147,7 @@ int main()
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
         TestToolkitConfig();
+        TestZoomTransitionInterpolation();
         {
             // Exercise the game's message path without installing any desktop
             // hook or injecting input into the user's applications.

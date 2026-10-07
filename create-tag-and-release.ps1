@@ -58,7 +58,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not check local tags.' }
 if ($localTag.Count -gt 0) { throw "Local tag '$tag' already exists." }
 
 Write-Host "Creating and pushing tag $tag"
-git tag -a $tag -m $tag
+git tag -a $tag -m $tag origin/main
 if ($LASTEXITCODE -ne 0) { throw "Could not create tag $tag." }
 
 git push origin $tag

@@ -18,7 +18,7 @@ Use this software at your own risk. It is provided "as is", without warranties o
 
 | Feature | Key (default) | Details and verification |
 | --- | --- | --- |
-| Zoom | C (hold), mouse wheel | Smooth local FOV transition; the wheel adjusts the target FOV. FOV and sensitivity are changed only after their targets are uniquely verified. The latest mouse input path has not yet been verified in-game. |
+| Zoom | C (hold), mouse wheel | Smooth local FOV transition; defaults to 15° in first person and 28° in third person. The wheel adjusts the target FOV. FOV and sensitivity are changed only after their targets are uniquely verified. The latest mouse input path has not yet been verified in-game. |
 | Always day | F6 | Keeps the rendered sun at noon and the moon below the horizon, with daytime sky colours. World time keeps progressing normally. Basic brightening has been verified; the celestial position, colours, stars, clouds, and restoration still need in-game visual verification. |
 | Nametag | F7 | Displays a custom name in third-person views. Verified in a local game. |
 | Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
@@ -32,7 +32,7 @@ Always day and Full Bright are enabled automatically after their profiles are ve
 | Status indicator | F9 | Shows or hides the local status indicator. |
 | Safe detach | F10 | Restores modified values and hooks, then detaches the module when restoration is safe. |
 
-Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Zoom values belong under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script copies the configuration next to the launcher.
+Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Set `FirstPersonFov` and `ThirdPersonFov` separately under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script copies the configuration next to the launcher. The older `Fov` setting remains supported as a fallback for both perspectives.
 
 ## Compatibility
 

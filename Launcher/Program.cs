@@ -25,7 +25,8 @@ internal static class Program
     private const uint WaitTimeout = 0x102;
     private const uint RemoteCallTimeoutMs = 30_000;
 
-    private sealed record ZoomConfig(float Fov, uint TransitionDurationMs, float MouseSensitivity,
+    private sealed record ZoomConfig(float FirstPersonFov, float ThirdPersonFov,
+        uint TransitionDurationMs, float MouseSensitivity,
         string Zoom, string Nametag, string AlwaysDay, string FullBright, string StatusIndicator, string SafeDetach);
 
     private static int Main()
@@ -36,7 +37,8 @@ internal static class Program
         {
             var zoomConfigPath = Path.Combine(AppContext.BaseDirectory, "bedrock-toolkit.ini");
             var zoomConfig = LoadZoomConfig(zoomConfigPath);
-            Console.WriteLine($"Configuration ({zoomConfigPath}): FOV {zoomConfig.Fov}, transition {zoomConfig.TransitionDurationMs} ms, " +
+            Console.WriteLine($"Configuration ({zoomConfigPath}): FOV first-person {zoomConfig.FirstPersonFov}, " +
+                $"third-person {zoomConfig.ThirdPersonFov}, transition {zoomConfig.TransitionDurationMs} ms, " +
                 $"sensitivity {zoomConfig.MouseSensitivity}; Zoom {zoomConfig.Zoom}, Nametag {zoomConfig.Nametag}, Always day {zoomConfig.AlwaysDay}, Full Bright {zoomConfig.FullBright}, " +
                 $"indicator {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}.");
 
@@ -94,7 +96,7 @@ internal static class Program
 
     private static ZoomConfig LoadZoomConfig(string path)
     {
-        var defaults = new ZoomConfig(10f, 180, 12f, "C", "F7", "F6", "F8", "F9", "F10");
+        var defaults = new ZoomConfig(15f, 28f, 180, 12f, "C", "F7", "F6", "F8", "F9", "F10");
         if (!File.Exists(path)) return defaults;
 
         var zoomValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -136,7 +138,10 @@ internal static class Program
             shortcutValues.TryGetValue(key, out var value) && IsSupportedKey(value) ? value.Trim().ToUpperInvariant() :
             shortcutValues.ContainsKey(key) ? throw new InvalidDataException($"Invalid key for {key}='{shortcutValues[key]}' in {path}.") : fallback;
 
-        var config = new ZoomConfig(ReadFloat("Fov", defaults.Fov, 1f, 120f), ReadDuration(),
+        var legacyFov = ReadFloat("Fov", defaults.FirstPersonFov, 1f, 120f);
+        var config = new ZoomConfig(ReadFloat("FirstPersonFov", legacyFov, 1f, 120f),
+            ReadFloat("ThirdPersonFov", zoomValues.ContainsKey("Fov") ? legacyFov : defaults.ThirdPersonFov, 1f, 120f),
+            ReadDuration(),
             ReadFloat("MouseSensitivity", defaults.MouseSensitivity, 0f, 100f),
             ReadKey("Zoom", defaults.Zoom), ReadKey("Nametag", defaults.Nametag),
             ReadKey("AlwaysDay", defaults.AlwaysDay), ReadKey("FullBright", defaults.FullBright),

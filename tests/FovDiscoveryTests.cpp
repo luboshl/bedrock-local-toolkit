@@ -40,6 +40,9 @@ namespace
     void TestToolkitConfig()
     {
         TemporaryToolkitConfig config;
+        Check(LoadZoomConfigFromPath(config.Path()), "load defaults without a config");
+        Check(g_zoomConfig.firstPersonFov == 15.0f && g_zoomConfig.thirdPersonFov == 28.0f,
+            "separate default FOVs for each perspective");
         config.Set(L"Zoom", L"Fov", L"33.5");
         config.Set(L"Zoom", L"TransitionDurationMs", L"275");
         config.Set(L"Zoom", L"MouseSensitivity", L"27.5");
@@ -50,8 +53,26 @@ namespace
         config.Set(L"Shortcuts", L"StatusIndicator", L"F4");
         config.Set(L"Shortcuts", L"SafeDetach", L"F5");
         Check(LoadZoomConfigFromPath(config.Path()), "load [Zoom] and [Shortcuts]");
-        Check(g_zoomConfig.fov == 33.5f && g_zoomConfig.transitionDurationMs == 275 &&
+        Check(g_zoomConfig.firstPersonFov == 33.5f && g_zoomConfig.thirdPersonFov == 33.5f &&
+            g_zoomConfig.transitionDurationMs == 275 &&
             g_zoomConfig.mouseSensitivity == 27.5f, "Zoom settings parsed");
+        config.Set(L"Zoom", L"FirstPersonFov", L"15.5");
+        Check(LoadZoomConfigFromPath(config.Path()) &&
+            g_zoomConfig.firstPersonFov == 15.5f && g_zoomConfig.thirdPersonFov == 33.5f,
+            "first-person FOV overrides only the legacy first-person fallback");
+        config.Set(L"Zoom", L"ThirdPersonFov", L"28.5");
+        Check(LoadZoomConfigFromPath(config.Path()) &&
+            g_zoomConfig.firstPersonFov == 15.5f && g_zoomConfig.thirdPersonFov == 28.5f,
+            "per-perspective FOV settings override the legacy fallback");
+
+        float target = 0.0f;
+        Check(ZoomFovForPerspective(g_zoomConfig, 0, target) && target == 15.5f,
+            "first-person selects its configured FOV");
+        Check(ZoomFovForPerspective(g_zoomConfig, 1, target) && target == 28.5f &&
+            ZoomFovForPerspective(g_zoomConfig, 2, target) && target == 28.5f,
+            "both third-person views select their configured FOV");
+        Check(!ZoomFovForPerspective(g_zoomConfig, -1, target),
+            "unknown camera perspective is refused");
         Check(g_zoomConfig.zoomKey == 'Z' && g_zoomConfig.nametagKey == VK_F1 &&
             g_zoomConfig.alwaysDayKey == VK_F2 && g_zoomConfig.fullBrightKey == VK_F3 &&
             g_zoomConfig.indicatorKey == VK_F4 && g_zoomConfig.exitKey == VK_F5,
@@ -274,19 +295,19 @@ int main()
             Check(g_fovScan.result == FovScanResult::Unique &&
                 fov::SameTarget(g_fovScan.foundTarget, fixture.target), "unique full scan, including own scratch buffer");
             Check(fixture.Value() == 70, "discovery never writes FOV");
-            Check(CompareExchangeFov(fixture.target.pattern + 8, 70, kDefaultZoomFov), "zoom to 10");
+            Check(CompareExchangeFov(fixture.target.pattern + 8, 70, 10.0f), "zoom to 10");
             g_zoom = {fixture.target, 70, true};
-            g_zoom.displayedValue = kDefaultZoomFov;
+            g_zoom.displayedValue = 10.0f;
             Check(fixture.Value() == 10 && RestoreZoom() == FovRestoreResult::Restored && fixture.Value() == 70,
                 "restore original FOV");
             fixture.Value(95);
             Check(!CompareExchangeFov(fixture.target.pattern + 8, 70, 10) && fixture.Value() == 95, "concurrent setting change");
             g_zoom = {fixture.target, 70, true};
-            g_zoom.displayedValue = kDefaultZoomFov;
+            g_zoom.displayedValue = 10.0f;
             Check(RestoreZoom() == FovRestoreResult::ValueChanged && fixture.Value() == 95, "external changes preserved");
             fixture.Value(10);
             g_zoom = {fixture.target, 70, true};
-            g_zoom.displayedValue = kDefaultZoomFov;
+            g_zoom.displayedValue = 10.0f;
             fixture.memory[1152] = 'x';
             Check(!ReadVerifiedTarget(fixture.target.options, verified, values), "wrong semantic key refused");
             Check(RestoreZoom() == FovRestoreResult::ValueChanged && fixture.Value() == 10, "reused object not overwritten");

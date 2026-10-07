@@ -33,7 +33,8 @@ namespace
     constexpr COLORREF kPanelColor = RGB(20, 34, 30);
     constexpr wchar_t kWindowClassName[] = L"MinecraftClient.GameMod.LocalOverlay";
     constexpr wchar_t kExpectedGameModuleName[] = L"Minecraft.Windows.exe";
-    constexpr float kDefaultZoomFov = 10.0f;
+    constexpr float kDefaultFirstPersonZoomFov = 15.0f;
+    constexpr float kDefaultThirdPersonZoomFov = 28.0f;
     constexpr float kZoomMinimumFov = 1.0f;
     constexpr float kZoomMaximumFov = 120.0f;
     constexpr float kZoomWheelStep = 5.0f;
@@ -55,7 +56,8 @@ namespace
 
     struct ZoomConfig
     {
-        float fov = kDefaultZoomFov;
+        float firstPersonFov = kDefaultFirstPersonZoomFov;
+        float thirdPersonFov = kDefaultThirdPersonZoomFov;
         ULONGLONG transitionDurationMs = kDefaultZoomTransitionDurationMs;
         float mouseSensitivity = 12.0f;
         int zoomKey = 'C';
@@ -66,6 +68,22 @@ namespace
         int exitKey = VK_F10;
     };
     ZoomConfig g_zoomConfig;
+
+    bool ZoomFovForPerspective(const ZoomConfig& config, int perspective, float& target)
+    {
+        if (perspective == 0)
+        {
+            target = config.firstPersonFov;
+            return true;
+        }
+        if (perspective == 1 || perspective == 2)
+        {
+            target = config.thirdPersonFov;
+            return true;
+        }
+        return false;
+    }
+
     constexpr float kFovMatchTolerance = fov::kTolerance;
     constexpr SIZE_T kFovScanChunkBytes = 4 * 1024 * 1024;
     constexpr SIZE_T kFovPatternBytes = sizeof(float) * 5;
@@ -100,7 +118,7 @@ namespace
         float originalValue = 0.0f;
         bool active = false;
         float originalMinimumValue = 30.0f;
-        float currentZoomValue = kDefaultZoomFov;
+        float currentZoomValue = kDefaultFirstPersonZoomFov;
         float displayedValue = 0.0f;
         float transitionStartValue = 0.0f;
         float transitionTargetValue = 0.0f;
@@ -726,14 +744,30 @@ namespace
     {
         ZoomConfig loaded;
         std::wstring value;
-        if (ReadToolkitConfigValue(L"Zoom", L"Fov", value, configPath))
+        const auto parseFov = [](const std::wstring& text, float& target)
         {
             wchar_t* end = nullptr;
-            value = TrimWhitespace(value);
-            const float parsed = std::wcstof(value.c_str(), &end);
-            if (end == value.c_str() || *end != L'\0' || !std::isfinite(parsed) ||
+            const float parsed = std::wcstof(text.c_str(), &end);
+            if (end == text.c_str() || *end != L'\0' || !std::isfinite(parsed) ||
                 parsed < kZoomMinimumFov || parsed > kZoomMaximumFov) return false;
-            loaded.fov = parsed;
+            target = parsed;
+            return true;
+        };
+        if (ReadToolkitConfigValue(L"Zoom", L"Fov", value, configPath))
+        {
+            value = TrimWhitespace(value);
+            if (!parseFov(value, loaded.firstPersonFov)) return false;
+            loaded.thirdPersonFov = loaded.firstPersonFov;
+        }
+        if (ReadToolkitConfigValue(L"Zoom", L"FirstPersonFov", value, configPath))
+        {
+            value = TrimWhitespace(value);
+            if (!parseFov(value, loaded.firstPersonFov)) return false;
+        }
+        if (ReadToolkitConfigValue(L"Zoom", L"ThirdPersonFov", value, configPath))
+        {
+            value = TrimWhitespace(value);
+            if (!parseFov(value, loaded.thirdPersonFov)) return false;
         }
         if (ReadToolkitConfigValue(L"Zoom", L"TransitionDurationMs", value, configPath))
         {
@@ -1143,8 +1177,14 @@ namespace
             SetOverlayMessage(L"FOV target changed; no memory changed", RGB(255, 170, 110));
             return;
         }
+        float zoomFov = 0.0f;
+        if (!ZoomFovForPerspective(g_zoomConfig, nametag::Perspective(target.options), zoomFov))
+        {
+            SetOverlayMessage(L"Camera perspective could not be verified; Zoom refused", RGB(255, 170, 110));
+            return;
+        }
         if (std::fabs(values[0] - kZoomMinimumFov) < kFovMatchTolerance &&
-            std::fabs(values[2] - g_zoomConfig.fov) < kFovMatchTolerance)
+            std::fabs(values[2] - zoomFov) < kFovMatchTolerance)
         {
             SetOverlayMessage(L"FOV already matches the configured Zoom level", RGB(255, 220, 120));
             return;
@@ -1177,10 +1217,10 @@ namespace
         g_zoom.target = target;
         g_zoom.originalMinimumValue = values[0];
         g_zoom.originalValue = values[2];
-        g_zoom.currentZoomValue = g_zoomConfig.fov;
+        g_zoom.currentZoomValue = zoomFov;
         g_zoom.displayedValue = values[2];
         g_zoom.transitionStartValue = values[2];
-        g_zoom.transitionTargetValue = g_zoomConfig.fov;
+        g_zoom.transitionTargetValue = zoomFov;
         g_zoom.transitionStartedAt = GetTickCount64();
         g_zoom.transitionActive = true;
         g_zoom.restoring = false;

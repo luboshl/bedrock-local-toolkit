@@ -684,20 +684,22 @@ namespace
         {
             char line[256]{};
             const int length = sprintf_s(line,
-                "pid=%lu event=%s status=%s ready=%ld enabled=%ld profile=3 source=%s return_rva=0x%llX noon_overrides=%lld\r\n",
+                "pid=%lu event=%s status=%s ready=%ld enabled=%ld profile=4 source=%s return_rva=0x%llX noon_overrides=%lld\r\n",
                 GetCurrentProcessId(), event, alwaysday::status,
                 InterlockedCompareExchange(&alwaysday::readiness, 0, 0),
                 InterlockedCompareExchange(&alwaysday::enabled, 0, 0),
-                alwaysday::kRenderCallers[i].returnRva == alwaysday::kBrightnessReturnRva ? "light-image" : "render-time",
+                alwaysday::kRenderCallers[i].returnRva == alwaysday::kBrightnessReturnRva ? "render-brightness" :
+                alwaysday::kRenderCallers[i].returnRva == alwaysday::kSunriseReturnRva ? "sunrise-colour" :
+                alwaysday::kRenderCallers[i].returnRva == alwaysday::kSkyColourReturnRva ? "sky-colour" : "render-time",
                 static_cast<unsigned long long>(alwaysday::kRenderCallers[i].returnRva), alwaysday::OverrideCount(i));
             DWORD written = 0;
             if (length > 0) WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
         }
         char line[256]{};
         const int length = sprintf_s(line,
-            "pid=%lu event=%s status=%s profile=3 stars_overrides=%lld cloud_overrides=%lld\r\n",
+            "pid=%lu event=%s status=%s profile=4 stars_overrides=%lld cloud_overrides=%lld celestial_overrides=%lld\r\n",
             GetCurrentProcessId(), event, alwaysday::status,
-            alwaysday::StarsOverrideCount(), alwaysday::CloudOverrideCount());
+            alwaysday::StarsOverrideCount(), alwaysday::CloudOverrideCount(), alwaysday::CelestialOverrideCount());
         DWORD written = 0;
         if (length > 0) WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
         CloseHandle(file);

@@ -14,7 +14,7 @@ namespace alwaysday
     struct alignas(16) BridgeData
     {
         volatile LONG enabled = 0;
-        LONG profileVersion = 3;
+        LONG profileVersion = 4;
         uintptr_t continuation = 0;
         uintptr_t callers[kCallerCount]{};
         volatile LONG64 overrides[kCallerCount]{};
@@ -23,24 +23,31 @@ namespace alwaysday
         uintptr_t cloudContinuation = 0;
         volatile LONG64 starsOverrides = 0;
         volatile LONG64 cloudOverrides = 0;
-        uintptr_t reserved = 0; // Explicit padding before the SSE constants.
+        uintptr_t skyBrightnessCaller = 0;
+        uintptr_t sunriseCallers[3]{};
+        uintptr_t skyColourCaller = 0;
+        uintptr_t celestialContinuation = 0;
+        volatile LONG64 celestialOverrides = 0;
         alignas(16) uint32_t alphaMask[4]{0, 0, 0, UINT32_MAX};
         alignas(16) uint32_t whiteRgb[4]{0x3F800000, 0x3F800000, 0x3F800000, 0};
     };
     static_assert(offsetof(BridgeData, starsContinuation) == 24 + 16 * kCallerCount);
+    static_assert(offsetof(BridgeData, skyBrightnessCaller) == 56 + 16 * kCallerCount);
+    static_assert(offsetof(BridgeData, celestialOverrides) == 104 + 16 * kCallerCount);
     static_assert(offsetof(BridgeData, alphaMask) % 16 == 0 && offsetof(BridgeData, whiteRgb) % 16 == 0);
     static_assert(sizeof(BridgeData) <= nametag::kAllocationSize - nametag::kDataOffset);
 
     inline unsigned char* bridge = nullptr;
     inline BridgeData* data = nullptr;
     inline nametag::Patch patch{};
-    inline nametag::Patch starsPatch{}, cloudPatch{};
+    inline nametag::Patch starsPatch{}, cloudPatch{}, celestialPatch{};
     inline volatile LONG enabled = 0;
     inline volatile LONG readiness = 0; // 0 starting, 2 installed, 3 refused/stopping
     inline const char* status = "starting"; // Worker only.
     inline bool stopping = false;
     inline std::array<LONG64, kCallerCount> finalOverrides{};
     inline LONG64 finalStarsOverrides = 0, finalCloudOverrides = 0;
+    inline LONG64 finalCelestialOverrides = 0;
 
     inline bool IsCode(uintptr_t base, uintptr_t rva, size_t size)
     {
@@ -81,7 +88,15 @@ namespace alwaysday
             std::make_tuple(kSkyContextRva, kSkyContextBytes, sizeof(kSkyContextBytes)),
             std::make_tuple(kStarCalculationRva, kStarCalculationBytes, sizeof(kStarCalculationBytes)),
             std::make_tuple(kCloudContextRva, kCloudContextBytes, sizeof(kCloudContextBytes)),
-            std::make_tuple(kCloudBindingRva, kCloudBindingBytes, sizeof(kCloudBindingBytes))})
+            std::make_tuple(kCloudBindingRva, kCloudBindingBytes, sizeof(kCloudBindingBytes)),
+            std::make_tuple(kSkyPhaseFunctionRva, kSkyPhaseFunctionBytes, sizeof(kSkyPhaseFunctionBytes)),
+            std::make_tuple(kSunriseFunctionRva, kSunriseFunctionBytes, sizeof(kSunriseFunctionBytes)),
+            std::make_tuple(kSkyColourFunctionRva, kSkyColourFunctionBytes, sizeof(kSkyColourFunctionBytes)),
+            std::make_tuple(kSkyBrightnessContextRva, kSkyBrightnessContextBytes, sizeof(kSkyBrightnessContextBytes)),
+            std::make_tuple(kSunriseContext0Rva, kSunriseContext0Bytes, sizeof(kSunriseContext0Bytes)),
+            std::make_tuple(kSunriseContext1Rva, kSunriseContext1Bytes, sizeof(kSunriseContext1Bytes)),
+            std::make_tuple(kSunriseContext2Rva, kSunriseContext2Bytes, sizeof(kSunriseContext2Bytes)),
+            std::make_tuple(kSkyColourContextRva, kSkyColourContextBytes, sizeof(kSkyColourContextBytes))})
             if (!IsCode(base, std::get<0>(context), std::get<2>(context)) ||
                 !Matches(base + std::get<0>(context), std::get<1>(context), std::get<2>(context))) return false;
         const unsigned char cloudName[] = "CloudColor";
@@ -110,21 +125,39 @@ namespace alwaysday
         {
             code.Rip({0x4C, 0x3B, 0x1D}, reinterpret_cast<uintptr_t>(&state->callers[i]));
             const size_t next = code.Branch(0x85);
-            size_t otherBrightnessCaller = 0;
+            size_t otherParent = 0;
+            const auto requireParent = [&](uint32_t offset, std::initializer_list<uintptr_t> parents) {
+                // Parent offset includes the nested call and both bridge pushes.
+                code.Emit({0x4C, 0x8B, 0x9C, 0x24});
+                code.Dword(static_cast<int32_t>(offset));
+                std::vector<size_t> matches;
+                for (uintptr_t parent : parents) {
+                    code.Rip({0x4C, 0x3B, 0x1D}, parent);
+                    matches.push_back(code.Branch(0x84));
+                }
+                otherParent = code.Jump();
+                for (size_t match : matches) code.Bind(match);
+            };
             if (kRenderCallers[i].returnRva == kBrightnessReturnRva)
             {
-                // Two bridge pushes (0x10), the helper frame and its call
-                // put the helper's original return address at rsp + 0x70.
                 static_assert(kBrightnessAncestorOffset + 0x10 == 0x70);
-                static_assert(kRenderCallers[kCallerCount - 1].returnRva == kBrightnessReturnRva);
-                code.Emit({0x4C, 0x8B, 0x5C, 0x24, 0x70});
-                code.Rip({0x4C, 0x3B, 0x1D}, reinterpret_cast<uintptr_t>(&state->lightImageCaller));
-                otherBrightnessCaller = code.Branch(0x85);
+                requireParent(0x70, {reinterpret_cast<uintptr_t>(&state->lightImageCaller),
+                    reinterpret_cast<uintptr_t>(&state->skyBrightnessCaller)});
             }
+            else if (kRenderCallers[i].returnRva == kSunriseReturnRva)
+                requireParent(0x70, {reinterpret_cast<uintptr_t>(&state->sunriseCallers[0]),
+                    reinterpret_cast<uintptr_t>(&state->sunriseCallers[1]),
+                    reinterpret_cast<uintptr_t>(&state->sunriseCallers[2])});
+            else if (kRenderCallers[i].returnRva == kSkyColourReturnRva)
+                requireParent(0xC0, {reinterpret_cast<uintptr_t>(&state->skyColourCaller)});
             code.Rip({0xF0, 0x48, 0xFF, 0x05}, reinterpret_cast<uintptr_t>(&state->overrides[i]));
             accepted[i] = code.Jump();
             code.Bind(next);
-            if (otherBrightnessCaller) code.Bind(otherBrightnessCaller);
+            if (otherParent) {
+                code.Bind(otherParent);
+                // A rejected nested context must not mask a later caller.
+                code.Emit({0x4C, 0x8B, 0x5C, 0x24, 0x10});
+            }
         }
         const size_t otherCaller = code.Jump();
         for (size_t branch : accepted) code.Bind(branch);
@@ -167,15 +200,31 @@ namespace alwaysday
         clouds.Bind(nativeClouds);
         clouds.Emit({0x41, 0x5B, 0x9D});
         clouds.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->cloudContinuation));
-        if (clouds.Size() >= nametag::kDataOffset - kCloudBridgeOffset) throw std::runtime_error("Always day clouds bridge size");
+        if (clouds.Size() >= kCelestialBridgeOffset - kCloudBridgeOffset) throw std::runtime_error("Always day clouds bridge size");
         clouds.Finish(memory + kCloudBridgeOffset);
+
+        nametag::Code celestial(reinterpret_cast<uintptr_t>(memory + kCelestialBridgeOffset));
+        celestial.Emit({0x9C, 0x41, 0x53});
+        celestial.Rip({0x44, 0x8B, 0x1D}, reinterpret_cast<uintptr_t>(&state->enabled));
+        celestial.Emit({0x45, 0x85, 0xDB});
+        const size_t nativeAngle = celestial.Branch(0x84);
+        celestial.Rip({0xF0, 0x48, 0xFF, 0x05}, reinterpret_cast<uintptr_t>(&state->celestialOverrides));
+        // Zero radians is native noon: sun above, opposite moon below.
+        // This is a temporary sky description, independent of the level clock.
+        celestial.Emit({0x0F, 0x57, 0xC0});
+        celestial.Bind(nativeAngle);
+        celestial.Emit({0x41, 0x5B, 0x9D});
+        for (unsigned char byte : kCelestialOriginal) celestial.Emit({byte});
+        celestial.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->celestialContinuation));
+        if (celestial.Size() >= nametag::kDataOffset - kCelestialBridgeOffset) throw std::runtime_error("Always day celestial bridge size");
+        celestial.Finish(memory + kCelestialBridgeOffset);
     }
 
     inline bool ChangePatch(bool install)
     {
         nametag::FrozenThreads frozen;
         if (!frozen.Freeze()) return false;
-        const std::array<nametag::Patch*, 3> patches{&patch, &starsPatch, &cloudPatch};
+        const std::array<nametag::Patch*, 4> patches{&patch, &starsPatch, &cloudPatch, &celestialPatch};
         // Preflight every site before touching any of them. A partial install
         // stays disabled and is restored by Shutdown before bridge release.
         for (const auto* site : patches)
@@ -210,7 +259,7 @@ namespace alwaysday
         if (!bridge) return true;
         InterlockedExchange(&data->enabled, 0);
         const auto pending = [](const nametag::Patch& site) { return site.installed || site.protectionPending || site.cachePending; };
-        if ((pending(patch) || pending(starsPatch) || pending(cloudPatch)) && !ChangePatch(false))
+        if ((pending(patch) || pending(starsPatch) || pending(cloudPatch) || pending(celestialPatch)) && !ChangePatch(false))
         { status = "restore-pending"; return false; }
         // With the entry restored, no new thread can enter the bridge. It has
         // no callback or return address into the DLL; exclude only its own code
@@ -222,6 +271,7 @@ namespace alwaysday
             finalOverrides[i] = InterlockedCompareExchange64(&data->overrides[i], 0, 0);
         finalStarsOverrides = InterlockedCompareExchange64(&data->starsOverrides, 0, 0);
         finalCloudOverrides = InterlockedCompareExchange64(&data->cloudOverrides, 0, 0);
+        finalCelestialOverrides = InterlockedCompareExchange64(&data->celestialOverrides, 0, 0);
         if (!VirtualFree(bridge, 0, MEM_RELEASE)) { status = "bridge-release-pending"; return false; }
         bridge = nullptr;
         data = nullptr;
@@ -241,6 +291,10 @@ namespace alwaysday
         new (data) BridgeData{};
         data->continuation = base + kPatchRva + sizeof(kOriginal);
         data->lightImageCaller = base + kLightImageReturnRva;
+        data->skyBrightnessCaller = base + kSkyBrightnessReturnRva;
+        for (size_t i = 0; i < 3; ++i) data->sunriseCallers[i] = base + kSunriseParents[i];
+        data->skyColourCaller = base + kSkyColourParent;
+        data->celestialContinuation = base + kCelestialPatchRva + sizeof(kCelestialOriginal);
         data->starsContinuation = base + kStarsPatchRva + sizeof(kStarsOriginal);
         data->cloudContinuation = base + kCloudPatchRva + sizeof(kCloudOriginal);
         for (size_t i = 0; i < kCallerCount; ++i) data->callers[i] = base + kRenderCallers[i].returnRva;
@@ -255,6 +309,8 @@ namespace alwaysday
                     reinterpret_cast<uintptr_t>(bridge + kStarsBridgeOffset)) &&
                 nametag::Jump(cloudPatch, base + kCloudPatchRva, kCloudOriginal, sizeof(kCloudOriginal),
                     reinterpret_cast<uintptr_t>(bridge + kCloudBridgeOffset)) &&
+                nametag::Jump(celestialPatch, base + kCelestialPatchRva, kCelestialOriginal, sizeof(kCelestialOriginal),
+                    reinterpret_cast<uintptr_t>(bridge + kCelestialBridgeOffset)) &&
                 VirtualProtect(bridge, nametag::kDataOffset, PAGE_EXECUTE_READ, &previous) &&
                 FlushInstructionCache(GetCurrentProcess(), bridge, nametag::kDataOffset);
         }
@@ -300,5 +356,10 @@ namespace alwaysday
     inline LONG64 CloudOverrideCount()
     {
         return data ? InterlockedCompareExchange64(&data->cloudOverrides, 0, 0) : finalCloudOverrides;
+    }
+
+    inline LONG64 CelestialOverrideCount()
+    {
+        return data ? InterlockedCompareExchange64(&data->celestialOverrides, 0, 0) : finalCelestialOverrides;
     }
 }

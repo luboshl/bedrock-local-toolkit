@@ -19,7 +19,7 @@ Use this software at your own risk. It is provided "as is", without warranties o
 | Feature | Key (default) | Details and verification |
 | --- | --- | --- |
 | Zoom | C (hold), mouse wheel | Smooth local FOV transition; the wheel adjusts the target FOV. FOV and sensitivity are changed only after their targets are uniquely verified. The latest mouse input path has not yet been verified in-game. |
-| Always day | F6 | Changes the appearance of profiled local rendering paths; does not change world time or simulation. Basic brightening has been verified. The sun, stars, clouds, and disable-time restoration still need in-game visual verification. |
+| Always day | F6 | Keeps the rendered sun at noon and the moon below the horizon, with daytime sky colours. World time keeps progressing normally. Basic brightening has been verified; the celestial position, colours, stars, clouds, and restoration still need in-game visual verification. |
 | Nametag | F7 | Displays a custom name in third-person views. Verified in a local game. |
 | Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
 

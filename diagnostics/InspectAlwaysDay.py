@@ -27,7 +27,9 @@ def profile():
     if not callers:
         raise RuntimeError("No renderer callers in profile")
     extra = []
-    for name in ("kBrightnessFunction", "kLightImageContext", "kSkyContext", "kStarCalculation", "kCloudContext", "kCloudBinding"):
+    for name in ("kBrightnessFunction", "kLightImageContext", "kSkyContext", "kStarCalculation", "kCloudContext", "kCloudBinding",
+                 "kSkyPhaseFunction", "kSunriseFunction", "kSkyColourFunction", "kSkyBrightnessContext",
+                 "kSunriseContext0", "kSunriseContext1", "kSunriseContext2", "kSkyColourContext"):
         rva = int(re.search(rf"{name}Rva = (0x[0-9A-Fa-f]+)", source)[1], 16)
         body = re.search(rf"{name}Bytes\[\] = \{{(.*?)\}};", source, re.S)[1]
         data = bytes(int(value, 16) for value in re.findall(r"0x([0-9A-Fa-f]{2})", body))
@@ -42,12 +44,9 @@ def inspect_read(read, base):
     patched = actual[3] == 0xe9 and actual[8:10] == b"\x90\x90"
     original = actual == expected
     remaining = actual[:3] == expected[:3] and actual[10:] == expected[10:]
-    contexts = [{"contextRva": hex(context), "returnRva": hex(ret),
-                 "matches": read(base + context, len(data)) == data}
-                for context, ret, data in callers]
     source = (Path(__file__).resolve().parent.parent / "GameMod" / "AlwaysDayProfile.h").read_text()
     sites = []
-    for name, offset in (("Stars", 1024), ("Cloud", 2048)):
+    for name, offset in (("Stars", 1024), ("Cloud", 2048), ("Celestial", 3072)):
         rva = int(re.search(rf"k{name}PatchRva = (0x[0-9A-Fa-f]+)", source)[1], 16)
         body = re.search(rf"k{name}Original\[\] = \{{(.*?)\}};", source, re.S)[1]
         expected_site = bytes(int(value, 16) for value in re.findall(r"0x([0-9A-Fa-f]{2})", body))
@@ -62,10 +61,13 @@ def inspect_read(read, base):
         actual_context = bytearray(read(base + rva, len(expected_context)))
         for site in sites:
             delta = site["rva"] - rva
-            if 0 <= delta <= len(actual_context) - len(site["original"]) and site["state"] == "jump":
-                actual_context[delta:delta + len(site["original"])] = site["original"]
+            first, last = max(0, delta), min(len(actual_context), delta + len(site["original"]))
+            if first < last and site["state"] == "jump":
+                actual_context[first:last] = site["original"][first-delta:last-delta]
         return actual_context == expected_context
 
+    contexts = [{"contextRva": hex(context), "returnRva": hex(ret),
+                 "matches": context_matches(context, data)} for context, ret, data in callers]
     brightness = [{"name": name, "rva": hex(rva), "matches": context_matches(rva, data)}
                   for name, rva, data in extra]
     constants = (struct.unpack("<f", read(base + 0xE7FEF84, 4))[0] == 24000.0 and
@@ -84,9 +86,9 @@ def inspect_read(read, base):
               all(s["state"] == "original" for s in sites)}
     if patched and remaining:
         bridge = base + function + 3 + 5 + struct.unpack_from("<i", actual, 4)[0]
-        state = read(bridge + 4096, 56 + 16 * len(callers))
+        state = read(bridge + 4096, 112 + 16 * len(callers))
         enabled, version, continuation = struct.unpack_from("<IIQ", state)
-        if version != 3:
+        if version != 4:
             result["bridgeCandidate"] = {"address": hex(bridge), "profileVersion": version,
                                          "layoutMatchesProfile": False}
             return result
@@ -94,14 +96,21 @@ def inspect_read(read, base):
         counters = struct.unpack_from(f"<{len(callers)}Q", state, 16 + 8 * len(callers))
         ancestor = struct.unpack_from("<Q", state, 16 + 16 * len(callers))[0]
         stars_continuation, cloud_continuation, stars_count, cloud_count = struct.unpack_from("<4Q", state, 24 + 16 * len(callers))
+        sky_brightness, sunrise0, sunrise1, sunrise2, sky_colour, celestial_continuation, celestial_count = struct.unpack_from("<7Q", state, 56 + 16 * len(callers))
+        sunrise_parents = tuple(int(value, 16) for value in re.findall(r"0x[0-9A-Fa-f]+",
+            re.search(r"kSunriseParents\[\] = \{(.*?)\}", source)[1]))
+        sky_brightness_return = int(re.search(r"kSkyBrightnessReturnRva = (0x[0-9A-Fa-f]+)", source)[1], 16)
+        sky_colour_parent = int(re.search(r"kSkyColourParent = (0x[0-9A-Fa-f]+)", source)[1], 16)
         result["bridgeCandidate"] = {
             "address": hex(bridge), "enabled": enabled,
             "profileVersion": version, "lightImageCaller": hex(ancestor),
             "layoutMatchesProfile": enabled in (0, 1) and ancestor == base + light_image_return and
+            sky_brightness == base + sky_brightness_return and sky_colour == base + sky_colour_parent and
+            (sunrise0, sunrise1, sunrise2) == tuple(base + ret for ret in sunrise_parents) and
             all(s["state"] == "jump" and s["destination"] == bridge + s["offset"] for s in sites) and
-            (stars_continuation, cloud_continuation) == tuple(base + s["rva"] + len(s["original"]) for s in sites) and
+            (stars_continuation, cloud_continuation, celestial_continuation) == tuple(base + s["rva"] + len(s["original"]) for s in sites) and
             continuation == base + function + 10 and addresses == tuple(base + ret for _, ret, _ in callers),
-            "starsOverrides": stars_count, "cloudOverrides": cloud_count,
+            "starsOverrides": stars_count, "cloudOverrides": cloud_count, "celestialOverrides": celestial_count,
             "noonOverrides": {hex(ret): count for (_, ret, _), count in zip(callers, counters)}}
     return result
 

@@ -258,6 +258,11 @@ int main()
         Check(!fov::MayActivate(true, true, false, false, true, false, true), "restore pending blocks activation");
         Check(!fov::MayActivate(true, true, false, false, false, true, true), "stopping blocks pending activation");
         Check(!fov::MayActivate(true, true, false, false, false, false, false), "unverified result blocks activation");
+        Check(fov::ShouldRestoreZoom(false, true, false),
+            "active Zoom restores after key release even without a prior sampled key-down");
+        Check(!fov::ShouldRestoreZoom(true, true, false), "held Zoom key does not restore");
+        Check(!fov::ShouldRestoreZoom(false, false, false), "inactive Zoom does not restore");
+        Check(!fov::ShouldRestoreZoom(false, true, true), "already restoring Zoom does not restart restoration");
         std::puts("FOV discovery tests passed: unique/multiple/missing/timeout, object identity, protected memory, CAS/restore, pending input and local wheel messages.");
         return 0;
     }

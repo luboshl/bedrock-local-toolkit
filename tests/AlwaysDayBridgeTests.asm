@@ -1,11 +1,27 @@
 ; Synthetic frames for the emitted bridges; no game process is opened.
 .code
 public InvokeAlwaysDayTime, AlwaysDayTimeContinue, InvokeAlwaysDayRender, AlwaysDayRenderContinue
+public InvokeAlwaysDayPhase, AlwaysDayPhaseReturn
+; Execute the complete relocated native day-cycle function with a real return
+; address and the same validated ancestor depths as its rendering callers.
+InvokeAlwaysDayPhase PROC
+    push rbx
+    sub rsp,100h
+    mov qword ptr [rsp+58h],r9
+    mov qword ptr [rsp+98h],r9
+    mov qword ptr [rsp+0A8h],r9
+    call rcx
+AlwaysDayPhaseReturn LABEL NEAR
+    add rsp,100h
+    pop rbx
+    ret
+InvokeAlwaysDayPhase ENDP
 InvokeAlwaysDayTime PROC
     push rbx
     sub rsp,100h
     mov rbx,rdx
     mov qword ptr [rsp+58h],r9
+    mov qword ptr [rsp+98h],r9
     mov qword ptr [rsp+0A8h],r9
     movsxd rax,dword ptr [rbx]
     movss xmm2,dword ptr [rbx+4]

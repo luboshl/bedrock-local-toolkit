@@ -29,7 +29,9 @@ def profile():
     extra = []
     for name in ("kBrightnessFunction", "kLightImageContext", "kSkyContext", "kStarCalculation", "kCloudContext", "kCloudBinding",
                  "kSkyPhaseFunction", "kSunriseFunction", "kSkyColourFunction", "kSkyBrightnessContext",
-                 "kSunriseContext0", "kSunriseContext1", "kSunriseContext2", "kSkyColourContext"):
+                 "kSunriseContext0", "kSunriseContext1", "kSunriseContext2", "kSkyColourContext",
+                 "kDirectionFunction", "kSunFacingFunction", "kDirectionContext0", "kDirectionContext1",
+                 "kSunFacingContext0", "kSunFacingContext1", "kCameraColourContext"):
         rva = int(re.search(rf"{name}Rva = (0x[0-9A-Fa-f]+)", source)[1], 16)
         body = re.search(rf"{name}Bytes\[\] = \{{(.*?)\}};", source, re.S)[1]
         data = bytes(int(value, 16) for value in re.findall(r"0x([0-9A-Fa-f]{2})", body))
@@ -46,7 +48,7 @@ def inspect_read(read, base):
     remaining = actual[:3] == expected[:3] and actual[10:] == expected[10:]
     source = (Path(__file__).resolve().parent.parent / "GameMod" / "AlwaysDayProfile.h").read_text()
     sites = []
-    for name, offset in (("Stars", 1024), ("Cloud", 2048), ("Celestial", 3072)):
+    for name, offset in (("Stars", 1536), ("Cloud", 2048), ("Celestial", 3072)):
         rva = int(re.search(rf"k{name}PatchRva = (0x[0-9A-Fa-f]+)", source)[1], 16)
         body = re.search(rf"k{name}Original\[\] = \{{(.*?)\}};", source, re.S)[1]
         expected_site = bytes(int(value, 16) for value in re.findall(r"0x([0-9A-Fa-f]{2})", body))
@@ -86,9 +88,9 @@ def inspect_read(read, base):
               all(s["state"] == "original" for s in sites)}
     if patched and remaining:
         bridge = base + function + 3 + 5 + struct.unpack_from("<i", actual, 4)[0]
-        state = read(bridge + 4096, 112 + 16 * len(callers))
+        state = read(bridge + 4096, 160 + 16 * len(callers))
         enabled, version, continuation = struct.unpack_from("<IIQ", state)
-        if version != 4:
+        if version != 5:
             result["bridgeCandidate"] = {"address": hex(bridge), "profileVersion": version,
                                          "layoutMatchesProfile": False}
             return result
@@ -101,10 +103,17 @@ def inspect_read(read, base):
             re.search(r"kSunriseParents\[\] = \{(.*?)\}", source)[1]))
         sky_brightness_return = int(re.search(r"kSkyBrightnessReturnRva = (0x[0-9A-Fa-f]+)", source)[1], 16)
         sky_colour_parent = int(re.search(r"kSkyColourParent = (0x[0-9A-Fa-f]+)", source)[1], 16)
+        nested_names = ("kDirectionParents", "kSunFacingParents")
+        nested_parents = tuple(int(value, 16) for name in nested_names for value in re.findall(
+            r"0x[0-9A-Fa-f]+", re.search(rf"{name}\[\] = \{{(.*?)\}}", source)[1]))
+        camera_parents = tuple(int(re.search(rf"{name} = (0x[0-9A-Fa-f]+)", source)[1], 16)
+                               for name in ("kCameraSkyColourParent", "kCameraSunriseParent"))
+        additional = struct.unpack_from("<6Q", state, 112 + 16 * len(callers))
         result["bridgeCandidate"] = {
             "address": hex(bridge), "enabled": enabled,
             "profileVersion": version, "lightImageCaller": hex(ancestor),
             "layoutMatchesProfile": enabled in (0, 1) and ancestor == base + light_image_return and
+            additional == tuple(base + ret for ret in nested_parents + camera_parents) and
             sky_brightness == base + sky_brightness_return and sky_colour == base + sky_colour_parent and
             (sunrise0, sunrise1, sunrise2) == tuple(base + ret for ret in sunrise_parents) and
             all(s["state"] == "jump" and s["destination"] == bridge + s["offset"] for s in sites) and

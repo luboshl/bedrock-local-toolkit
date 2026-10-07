@@ -55,6 +55,7 @@ namespace nametag
     inline std::array<Patch, 2> patches{};
     inline volatile LONG enabled = 0;
     inline volatile LONG readiness = 0; // 0 starting, 1 waiting, 2 ready, 3 refused
+    inline volatile LONG enableByDefaultPending = 0;
     inline volatile LONG64 optionsAddress = 0;
     inline volatile LONG64 ownChecks = 0;
     inline volatile LONG64 shownRear = 0;
@@ -440,6 +441,7 @@ namespace nametag
     {
         stopping = true;
         InterlockedExchange(&enabled, 0);
+        InterlockedExchange(&enableByDefaultPending, 0);
         InterlockedExchange(&readiness, 3);
         InterlockedExchange64(&optionsAddress, 0);
         if (!bridge) return true;
@@ -468,6 +470,7 @@ namespace nametag
     inline bool Initialize(uintptr_t base, bool supported)
     {
         InterlockedExchange(&enabled, 0);
+        InterlockedExchange(&enableByDefaultPending, 0);
         InterlockedExchange64(&optionsAddress, 0);
         stopping = false;
         if (!ValidateProfile(base, supported))
@@ -511,6 +514,14 @@ namespace nametag
         }
         status = "waiting-options";
         InterlockedExchange(&readiness, 1);
+        InterlockedExchange(&enableByDefaultPending, 1);
+        return true;
+    }
+
+    inline bool EnableByDefault()
+    {
+        if (stopping || !data || InterlockedCompareExchange(&readiness, 0, 0) != 2) return false;
+        InterlockedExchange(&enabled, 1);
         return true;
     }
 
@@ -521,6 +532,8 @@ namespace nametag
         InterlockedExchange64(&optionsAddress, valid ? static_cast<LONG64>(options) : 0);
         InterlockedExchange(&readiness, valid ? 2 : 1);
         status = valid ? "ready" : "waiting-options";
+        if (valid && InterlockedCompareExchange(&enableByDefaultPending, 0, 0) && EnableByDefault())
+            InterlockedExchange(&enableByDefaultPending, 0);
     }
 
     inline bool Toggle()

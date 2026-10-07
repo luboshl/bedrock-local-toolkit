@@ -279,6 +279,14 @@ namespace alwaysday
         return true;
     }
 
+    inline bool EnableByDefault()
+    {
+        if (stopping || !data || InterlockedCompareExchange(&readiness, 0, 0) != 2) return false;
+        InterlockedExchange(&data->enabled, 1);
+        InterlockedExchange(&enabled, 1);
+        return true;
+    }
+
     inline bool Initialize(uintptr_t base, bool supported)
     {
         stopping = false;
@@ -330,6 +338,11 @@ namespace alwaysday
         }
         status = "ready";
         InterlockedExchange(&readiness, 2);
+        if (!EnableByDefault())
+        {
+            Shutdown();
+            return false;
+        }
         return true;
     }
 

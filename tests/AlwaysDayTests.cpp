@@ -24,7 +24,8 @@ struct RenderObservation { uint32_t rgba[4]{}; uintptr_t rax, rcx, rdx, r8, r11,
 int main() {
 try {
     using namespace alwaysday;
-    Check(!ValidateProfile(0, true) && !ValidateProfile(1, false) && !Toggle(), "unsupported/toggle refused");
+    Check(!ValidateProfile(0, true) && !ValidateProfile(1, false) && !Toggle() && !EnableByDefault(),
+        "unsupported/toggle refused");
     Allocation executable;
     auto* state = new (executable.memory + nametag::kDataOffset) BridgeData{};
     state->continuation = reinterpret_cast<uintptr_t>(&AlwaysDayTimeContinue);
@@ -39,6 +40,7 @@ try {
     Check(VirtualProtect(executable.memory, nametag::kDataOffset, PAGE_EXECUTE_READ, &previous) != FALSE, "RX bridge");
     Check(FlushInstructionCache(GetCurrentProcess(), executable.memory, nametag::kDataOffset) != FALSE, "flush");
     bridge = executable.memory; data = state; readiness = 2;
+    Check(EnableByDefault() && enabled == 1 && state->enabled == 1, "ready feature enabled by default");
     for (int mode : {0, 1, 0}) {
         if (mode != enabled) Check(Toggle(), "toggle");
         for (int tick : {0, 6000, 12000, 18000, 23999})

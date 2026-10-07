@@ -19,6 +19,8 @@ The only supported package is `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8
 
 Zoom values are configured in `[Zoom]` and feature shortcuts in `[Shortcuts]` in `config\bedrock-toolkit.ini`; the build script copies it next to the launcher. All shortcuts must be supported and distinct. If `bedrock-toolkit.ini` is missing, the launcher and module use their defaults. If sensitivity or FOV cannot be safely identified, the module must not attempt a blind write.
 
+Always day and Full Bright start enabled after their rendering profiles are verified. Nametag starts enabled once valid camera options are available. Their configured shortcuts toggle them off and on. Zoom preparation starts automatically, but Zoom remains hold-to-use as described above.
+
 ## Security and Implementation Requirements
 
 - Before any write, verify the exact package, PE identity, and complete original instructions with their relevant context. Reject the target on any mismatch, ambiguity, or read error.

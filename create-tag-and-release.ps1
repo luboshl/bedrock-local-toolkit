@@ -27,6 +27,9 @@ foreach ($line in $remoteRefs) {
 $latestVersion = [version]'0.0.0'
 foreach ($tagName in $tagCommits.Keys) {
     & git merge-base --is-ancestor $tagCommits[$tagName] origin/main 2>$null
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) {
+        throw "Could not check ancestry for '$tagName'. Fetch the required history and retry."
+    }
     if ($LASTEXITCODE -eq 0) {
         $tagVersion = [version]$tagName.Substring(1)
         if ($tagVersion -gt $latestVersion) {

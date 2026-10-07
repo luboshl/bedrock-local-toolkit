@@ -1,16 +1,19 @@
 // Execute production bridge instructions only on synthetic executable pages.
 #include "../GameMod/AlwaysDay.h"
 #include <cstdio>
+#include <cmath>
 extern "C" void InvokeAlwaysDayTime(void*, void*, uintptr_t, uintptr_t);
 extern "C" void AlwaysDayTimeContinue();
+extern "C" float InvokeAlwaysDayPhase(void*, int, float, uintptr_t);
+extern "C" void AlwaysDayPhaseReturn();
 extern "C" void InvokeAlwaysDayRender(void*, void*, void*);
 extern "C" void AlwaysDayRenderContinue();
 namespace {
 void Check(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 struct Allocation {
-    unsigned char* memory = static_cast<unsigned char*>(VirtualAlloc(nullptr, nametag::kAllocationSize,
-        MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
-    Allocation() { Check(memory != nullptr, "allocation"); }
+    unsigned char* memory;
+    explicit Allocation(size_t size = nametag::kAllocationSize) : memory(static_cast<unsigned char*>(
+        VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))) { Check(memory != nullptr, "allocation"); }
     ~Allocation() { if (memory) VirtualFree(memory, 0, MEM_RELEASE); }
     uintptr_t Address(size_t offset = 0) const { return reinterpret_cast<uintptr_t>(memory + offset); }
 };
@@ -19,6 +22,88 @@ struct TimeObservation {
     uintptr_t tickAfter = 0, product = 0, r11 = 0;
     uint32_t partialAfter[4]{};
 };
+// Run the pinned production instructions, including interpolation and smoothing,
+// rather than stopping immediately after the hook's replacement multiply.
+void CheckNativeNoon(const alwaysday::BridgeData& templateState) {
+    using namespace alwaysday;
+    Allocation native(0x42000), emitted;
+    auto* state = new (emitted.memory + nametag::kDataOffset) BridgeData{};
+    std::memcpy(state, &templateState, sizeof(*state));
+    state->continuation = native.Address(10);
+    BuildBridge(emitted.memory, state);
+    // The native leaf uses RIP-relative constants and a 65536-entry sine table.
+    // Relocate its exact profiled bytes to a synthetic image with equivalent data.
+    for (size_t copy : {size_t{0}, size_t{512}}) {
+        std::memcpy(native.memory + copy, kFunctionBytes, sizeof(kFunctionBytes));
+        for (size_t i = 0; i + 8 <= sizeof(kFunctionBytes); ++i) {
+            if (kFunctionBytes[i] != 0xF3 || kFunctionBytes[i+1] != 0x0F ||
+                (kFunctionBytes[i+3] & 0xC7) != 5) continue;
+            int32_t relative; std::memcpy(&relative, kFunctionBytes + i + 4, 4);
+            const uintptr_t target = kFunctionRva + i + 8 + relative;
+            float value = 0;
+            switch (target) {
+            case 0xE7FEF84: value = 24000.0f; break;
+            case 0xE7E14EC: value = -0.25f; break;
+            case 0xE5A7060: value = 1.0f; break;
+            case 0xE5E9578: value = -1.0f; break;
+            case 0xE6022B0: value = 3.1415927410125732f; break;
+            case 0xE6AE484: value = 10430.3779296875f; break;
+            case 0xE6AE488: value = 16384.0f; break;
+            case 0xE6022D0: value = -0.5f; break;
+            case 0xE6022AC: value = 3.0f; break;
+            default: Check(false, "unrecognized native constant");
+            }
+            const size_t offset = 1024 + i * 4;
+            std::memcpy(native.memory + offset, &value, 4);
+            relative = static_cast<int32_t>(offset - (copy + i + 8));
+            std::memcpy(native.memory + copy + i + 4, &relative, 4);
+        }
+        for (size_t i = 0; i + 7 <= sizeof(kFunctionBytes); ++i) {
+            if (kFunctionBytes[i] == 0x48 && kFunctionBytes[i+1] == 0x8D && kFunctionBytes[i+2] == 0x0D) {
+                const int32_t relative = static_cast<int32_t>(4096 - (copy + i + 7));
+                std::memcpy(native.memory + copy + i + 3, &relative, 4);
+            }
+        }
+    }
+    auto* sine = reinterpret_cast<float*>(native.memory + 4096);
+    for (size_t i = 0; i < 65536; ++i) sine[i] = static_cast<float>(std::sin(i * 6.283185307179586 / 65536));
+    nametag::Patch site{};
+    Check(nametag::Jump(site, native.Address(3), kOriginal, sizeof(kOriginal), emitted.Address()), "native phase hook");
+    std::memcpy(native.memory + 3, site.replacement.data(), site.size);
+    DWORD previous;
+    Check(VirtualProtect(native.memory, 0x42000, PAGE_EXECUTE_READ, &previous) &&
+        VirtualProtect(emitted.memory, nametag::kDataOffset, PAGE_EXECUTE_READ, &previous) &&
+        FlushInstructionCache(GetCurrentProcess(), native.memory, 0x42000) &&
+        FlushInstructionCache(GetCurrentProcess(), emitted.memory, nametag::kDataOffset), "native phase executable");
+    const float noon = InvokeAlwaysDayPhase(native.memory + 512, 6000, 0, 0);
+    Check(noon == 0.0f, "native noon has zero celestial rotation");
+    Check(InvokeAlwaysDayPhase(native.memory + 512, 18000, 0, 0) == 0.5f,
+        "native midnight places the opposite celestial body overhead");
+    for (int mode : {0, 1}) {
+        state->enabled = mode;
+        for (size_t i = 0; i < kCallerCount; ++i) {
+            const uintptr_t rva = kRenderCallers[i].returnRva;
+            const uintptr_t parent = rva == kBrightnessReturnRva ? kLightImageReturnRva :
+                rva == kSunriseReturnRva ? kSunriseParents[0] :
+                rva == kSkyColourReturnRva ? kSkyColourParent :
+                rva == kDirectionReturnRva ? kDirectionParents[0] : kSunFacingParents[0];
+            const uintptr_t saved = state->callers[i];
+            state->callers[i] = reinterpret_cast<uintptr_t>(&AlwaysDayPhaseReturn);
+            for (int tick : {0, 6000, 12000, 18000, 23999, 24000, 48000}) {
+                const float original = InvokeAlwaysDayPhase(native.memory + 512, tick, 0.75f, parent);
+                const float actual = InvokeAlwaysDayPhase(native.memory, tick, 0.75f, parent);
+                Check(actual == (mode ? noon : original), "complete native cycle stays at noon and restores when disabled");
+                if (rva == kBrightnessReturnRva || rva == kSunriseReturnRva ||
+                    rva == kSkyColourReturnRva || rva == kDirectionReturnRva || rva == kSunFacingReturnRva)
+                    Check(InvokeAlwaysDayPhase(native.memory, tick, 0.75f, 0x1234) == original,
+                        "complete native cycle leaves foreign consumers unchanged");
+            }
+            state->callers[i] = saved;
+        }
+        Check(InvokeAlwaysDayPhase(native.memory, 18000, 0.75f, 0) ==
+            InvokeAlwaysDayPhase(native.memory + 512, 18000, 0.75f, 0), "unapproved native caller unchanged");
+    }
+}
 struct RenderObservation { uint32_t rgba[4]{}; uintptr_t rax, rcx, rdx, r8, r11, flags; };
 }
 int main() {
@@ -34,6 +119,12 @@ try {
     state->skyBrightnessCaller = kSkyBrightnessReturnRva;
     for (size_t i = 0; i < 3; ++i) state->sunriseCallers[i] = kSunriseParents[i];
     state->skyColourCaller = kSkyColourParent;
+    state->cameraSkyColourCaller = kCameraSkyColourParent;
+    state->cameraSunriseCaller = kCameraSunriseParent;
+    for (size_t i = 0; i < 2; ++i) {
+        state->directionCallers[i] = kDirectionParents[i];
+        state->sunFacingCallers[i] = kSunFacingParents[i];
+    }
     for (size_t i = 0; i < kCallerCount; ++i) state->callers[i] = kRenderCallers[i].returnRva;
     BuildBridge(executable.memory, state);
     DWORD previous = 0;
@@ -50,7 +141,9 @@ try {
             const uintptr_t caller = i < kCallerCount ? state->callers[i] : 0x1234;
             const bool noon = mode && i < kCallerCount;
             const uintptr_t parent = caller == kSunriseReturnRva ? kSunriseParents[0] :
-                caller == kSkyColourReturnRva ? kSkyColourParent : kLightImageReturnRva;
+                caller == kSkyColourReturnRva ? kSkyColourParent :
+                caller == kDirectionReturnRva ? kDirectionParents[0] :
+                caller == kSunFacingReturnRva ? kSunFacingParents[0] : kLightImageReturnRva;
             InvokeAlwaysDayTime(bridge, &out, caller, parent);
             Check(out.tick == tick && out.partial == 0.75f, "source clock inputs unchanged");
             Check(out.tickAfter == static_cast<uintptr_t>(noon ? 6000 : tick) &&
@@ -64,7 +157,13 @@ try {
             std::make_pair(kSunriseReturnRva, kSunriseParents[0]),
             std::make_pair(kSunriseReturnRva, kSunriseParents[1]),
             std::make_pair(kSunriseReturnRva, kSunriseParents[2]),
-            std::make_pair(kSkyColourReturnRva, kSkyColourParent)}) {
+            std::make_pair(kSkyColourReturnRva, kSkyColourParent),
+            std::make_pair(kSkyColourReturnRva, kCameraSkyColourParent),
+            std::make_pair(kSunriseReturnRva, kCameraSunriseParent),
+            std::make_pair(kDirectionReturnRva, kDirectionParents[0]),
+            std::make_pair(kDirectionReturnRva, kDirectionParents[1]),
+            std::make_pair(kSunFacingReturnRva, kSunFacingParents[0]),
+            std::make_pair(kSunFacingReturnRva, kSunFacingParents[1])}) {
             TimeObservation out{}, unrelated{};
             InvokeAlwaysDayTime(bridge, &out, nested.first, nested.second);
             Check(out.tickAfter == (mode ? 6000 : 18000), "approved renderer parent");
@@ -97,11 +196,13 @@ try {
                 out.r8 == reinterpret_cast<uintptr_t>(&out) && (out.flags & 0x8D5) == 0x44, "render registers/flags");
         }
     }
+    CheckNativeNoon(*state);
     Check(StarsOverrideCount() == 1 && CloudOverrideCount() == 1 && CelestialOverrideCount() == 1, "enabled-only counters");
     for (size_t i = 0; i < kCallerCount; ++i) {
         const uintptr_t ret = kRenderCallers[i].returnRva;
-        Check(OverrideCount(i) == (ret == kBrightnessReturnRva ? 7 : ret == kSunriseReturnRva ? 8 :
-            ret == kSkyColourReturnRva ? 6 : 5), "noon counts");
+        Check(OverrideCount(i) == (ret == kBrightnessReturnRva ? 7 : ret == kSunriseReturnRva ? 9 :
+            ret == kSkyColourReturnRva ? 7 :
+            ret == kDirectionReturnRva || ret == kSunFacingReturnRva ? 7 : 5), "noon counts");
     }
     Allocation original;
     const std::array<nametag::Patch*, 4> sites{&patch, &starsPatch, &cloudPatch, &celestialPatch};
@@ -128,7 +229,7 @@ try {
     MEMORY_BASIC_INFORMATION protection{};
     VirtualQuery(original.memory, &protection, sizeof(protection));
     Check(protection.Protect == PAGE_EXECUTE_READ, "RX protection restored");
-    std::puts("Always day tests passed: render-only noon/parents, celestial angle, stars, cloud RGB/alpha and four-site restoration.");
+    std::puts("Always day tests passed: complete native day cycle, Fancy rotation/camera parents, render-only noon, celestial angle, stars, cloud RGB/alpha and four-site restoration.");
     return 0;
 } catch (const std::exception& error) { std::fprintf(stderr, "Always day test failed: %s\n", error.what()); return 1; }
 }

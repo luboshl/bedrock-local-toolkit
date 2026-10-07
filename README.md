@@ -75,17 +75,6 @@ From the repository root, run:
 
 This builds the C++ game module and C# launcher, then runs the isolated automated tests. Tests cover implementation details against synthetic memory; passing tests do not prove that behavior works in a live game. See [`SPECIFICATION.md`](SPECIFICATION.md) for the security requirements and verification boundaries.
 
-## Always day visual retest
-
-Use the supported build in a local single-player Overworld with Fancy graphics. Turn Full Bright off with its configured shortcut (default F8), so it cannot mask changes in daylight.
-
-1. With Always day off (default F6), set the world to noon and note the sun position and the sky while looking toward it.
-2. Enable Always day, then set the world to morning, sunset, and midnight. The sun should remain in that same noon position, with the moon below the horizon and no sunrise/sunset tint. Leave time progression enabled and confirm the sun remains stationary.
-3. Turn the camera toward and away from the sun; compare the colours with the native noon reference. Repeat with Full Bright on.
-4. Disable Always day at midnight and verify that the normal night sky, moon and daylight return. Detach (default F10) and verify normal rendering again.
-
-These commands change the test world's time manually; Always day itself only overrides rendering inputs. This retest remains pending for the issue #22 fix.
-
 ## Publish a release
 
 Releases are built by GitHub Actions when a version tag is pushed. From a clean checkout of the changes intended for release, create and push a version tag:

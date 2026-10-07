@@ -67,19 +67,19 @@ namespace
     void TestZoomTransitionInterpolation()
     {
         Check(InterpolateZoomFov(70.0f, 10.0f, 0, 50) == 70.0f,
-        "zoom transition begins at its starting FOV");
+            "zoom transition begins at its starting FOV");
         Check(std::fabs(InterpolateZoomFov(70.0f, 10.0f, 10, 40) - 60.625f) < 0.001f,
-        "zoom transition eases in");
+            "zoom transition eases in");
         Check(std::fabs(InterpolateZoomFov(70.0f, 10.0f, 20, 40) - 40.0f) < 0.001f,
-        "zoom transition reaches the midpoint");
+            "zoom transition reaches the midpoint");
         Check(std::fabs(InterpolateZoomFov(70.0f, 10.0f, 30, 40) - 19.375f) < 0.001f,
-        "zoom transition eases out");
+            "zoom transition eases out");
         Check(InterpolateZoomFov(70.0f, 10.0f, 50, 50) == 10.0f &&
-        InterpolateZoomFov(70.0f, 10.0f, 10'000, 10'000) == 10.0f,
-        "zoom transition reaches its target for different durations");
+            InterpolateZoomFov(70.0f, 10.0f, 10'000, 10'000) == 10.0f,
+            "zoom transition reaches its target for different durations");
         Check(InterpolateZoomFov(70.0f, 10.0f, 2'500, 10'000) ==
-        InterpolateZoomFov(70.0f, 10.0f, 10, 40),
-        "zoom easing is independent of the configured duration");
+            InterpolateZoomFov(70.0f, 10.0f, 10, 40),
+            "zoom easing is independent of the configured duration");
     }
 
     struct Fixture

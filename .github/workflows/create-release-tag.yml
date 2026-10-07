@@ -1,0 +1,88 @@
+name: Create Release Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional version override; leave empty to use the next patch version
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    runs-on: windows-2022
+    outputs:
+      tag: ${{ steps.create.outputs.tag }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Create and push release tag
+        id: create
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main') {
+              throw 'Run this workflow from the main branch.'
+          }
+
+          git fetch --force origin '+refs/tags/*:refs/tags/*'
+          if ($LASTEXITCODE -ne 0) {
+              throw 'Could not fetch release tags from origin.'
+          }
+
+          $releaseTags = @(git tag --merged HEAD --list 'v[0-9]*' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' })
+          $latestVersion = [version]'0.0.0'
+          foreach ($releaseTag in $releaseTags) {
+              $tagVersion = [version]$releaseTag.Substring(1)
+              if ($tagVersion -gt $latestVersion) {
+                  $latestVersion = $tagVersion
+              }
+          }
+
+          $suggestedVersion = '{0}.{1}.{2}' -f $latestVersion.Major, $latestVersion.Minor, ($latestVersion.Build + 1)
+          $version = $env:REQUESTED_VERSION
+          if ([string]::IsNullOrWhiteSpace($version)) {
+              $version = $suggestedVersion
+          }
+          else {
+              $version = $version.Trim()
+          }
+
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+              throw "Invalid version '$version'. Use MAJOR.MINOR.PATCH format, for example $suggestedVersion."
+          }
+
+          $tag = "v$version"
+          git show-ref --verify --quiet "refs/tags/$tag"
+          if ($LASTEXITCODE -eq 0) {
+              throw "Tag '$tag' already exists."
+          }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a $tag -m $tag
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not create tag '$tag'."
+          }
+
+          git push origin $tag
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not push tag '$tag'."
+          }
+
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Created and pushed $tag. Starting the build and draft release workflow."
+
+  build-release:
+    needs: create-tag
+    uses: ./.github/workflows/build-and-draf-release.yml
+    with:
+      tag: ${{ needs.create-tag.outputs.tag }}

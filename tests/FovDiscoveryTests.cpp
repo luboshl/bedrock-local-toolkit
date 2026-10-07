@@ -82,6 +82,14 @@ namespace
             "zoom easing is independent of the configured duration");
     }
 
+    void TestOverlayVisibilityPositionFlags()
+    {
+        Check((OverlayPositionFlags(false) & SWP_SHOWWINDOW) == 0,
+            "positioning a hidden overlay does not show it");
+        Check((OverlayPositionFlags(true) & SWP_SHOWWINDOW) != 0,
+            "positioning a visible overlay keeps it shown");
+    }
+
     struct Fixture
     {
         unsigned char* memory = static_cast<unsigned char*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
@@ -190,6 +198,7 @@ int main()
         g_supportedBuild = true;
         TestToolkitConfig();
         TestZoomTransitionInterpolation();
+        TestOverlayVisibilityPositionFlags();
         TestZoomWheelTransitionRetargeting();
         {
             // Exercise the game's message path without installing any desktop

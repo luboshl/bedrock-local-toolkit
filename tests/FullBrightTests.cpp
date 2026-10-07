@@ -33,7 +33,7 @@ int main()
     {
         using namespace fullbright;
         Check(!ValidateProfile(0, true) && !ValidateProfile(1, false), "unknown build/target refused");
-        Check(!Toggle(), "toggle without installed profile refused");
+        Check(!Toggle() && !EnableByDefault(), "enable without installed profile refused");
         Allocation executable;
         auto* state = reinterpret_cast<BridgeData*>(executable.memory + nametag::kDataOffset);
         state->continuation = reinterpret_cast<uintptr_t>(&FullBrightContinueTest);
@@ -45,6 +45,7 @@ int main()
         bridge = executable.memory;
         data = state;
         readiness = 2;
+        Check(EnableByDefault() && enabled == 1 && state->enabled == 1, "ready feature enabled by default");
         const uint32_t vector[] = {0x11223344, 0x55667788, 0x12345678, 0x76543210};
         for (int mode : {0, 1, 0})
         {

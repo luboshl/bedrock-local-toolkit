@@ -450,7 +450,7 @@ internal static class Program
                 IntPtr.Zero, "GetNametagReadiness", out _, out _);
             Console.WriteLine(nametagReadiness switch
             {
-                2 => "Nametag ready; press its configured key to enable it.",
+                2 => "Nametag ready and enabled by default; its configured key toggles it.",
                 3 => "Nametag rejected: the native rendering profile was not safely verified or prepared. See the log for details.",
                 _ => "Nametag is preparing; its key will be available after the rendering profile and camera settings are verified."
             });
@@ -458,7 +458,7 @@ internal static class Program
                 IntPtr.Zero, "GetAlwaysDayReadiness", out _, out _);
             Console.WriteLine(dayReadiness switch
             {
-                2 => "Always day: rendering profile ready; the feature is disabled by default. In-game behavior awaits verification.",
+                2 => "Always day: rendering profile ready and enabled by default. In-game behavior awaits verification.",
                 3 => "Always day rejected: profile validation or safe installation failed. See the log for details.",
                 _ => "Always day is preparing; check the indicator and diagnostic log for status."
             });
@@ -466,7 +466,7 @@ internal static class Program
                 IntPtr.Zero, "GetFullBrightReadiness", out _, out _);
             Console.WriteLine(brightReadiness switch
             {
-                2 => "Full Bright: rendering profile ready; the feature is disabled by default. The result awaits in-game verification.",
+                2 => "Full Bright: rendering profile ready and enabled by default. The result awaits in-game verification.",
                 3 => "Full Bright rejected: profile validation or safe installation failed. See the log for details.",
                 _ => "Full Bright is preparing; check the indicator and diagnostic log for status."
             });

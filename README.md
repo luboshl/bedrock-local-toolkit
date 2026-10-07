@@ -23,6 +23,8 @@ Use this software at your own risk. It is provided "as is", without warranties o
 | Nametag | F7 | Displays a custom name in third-person views. Verified in a local game. |
 | Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
 
+Always day and Full Bright are enabled automatically after their profiles are verified, and Nametag is enabled when valid camera options are available. Their shortcuts toggle them off and on. Zoom preparation is automatic, but Zoom remains hold-to-use.
+
 ### Utility controls
 
 | Control | Key (default) | Behavior |

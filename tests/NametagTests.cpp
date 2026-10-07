@@ -66,7 +66,8 @@ int main()
     try
     {
         using namespace nametag;
-        Check(!Initialize(0, false) && readiness == 3 && bridge == nullptr, "unsupported build refuses hooks");
+        Check(!Initialize(0, false) && readiness == 3 && bridge == nullptr && !EnableByDefault(),
+            "unsupported build refuses hooks");
         Allocation options;
         imageBase = 0x10000000;
         options.Pointer(0, imageBase + fov::kOptionsVtableRva);
@@ -80,6 +81,21 @@ int main()
         options.Pointer(1024 + fov::kKeyOffset + 16, 16);
         options.Pointer(1024 + fov::kKeyOffset + 24, 31);
         Check(Perspective(options.Address()) == 0, "first-person option identity");
+        bridge = options.memory;
+        data = reinterpret_cast<BridgeData*>(options.memory + kDataOffset);
+        patches[0].installed = patches[1].installed = true;
+        readiness = 1;
+        enableByDefaultPending = 1;
+        BindOptions(options.Address());
+        Check(readiness == 2 && enabled == 1 && enableByDefaultPending == 0,
+            "default activation waits for verified camera options");
+        enabled = 0;
+        BindOptions(options.Address());
+        Check(enabled == 0, "manual disable is preserved after startup");
+        bridge = nullptr;
+        data = nullptr;
+        patches = {};
+        readiness = 1;
         optionsAddress = static_cast<LONG64>(options.Address());
         enabled = 1;
         Check(!ShouldInclude(0x1000, 0x1000), "own name suppressed in first person");

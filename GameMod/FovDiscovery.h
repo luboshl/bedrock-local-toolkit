@@ -46,6 +46,11 @@ namespace fov
         return foreground && held && !escape && !needsRelease && !restorePending && !stopping && ready;
     }
 
+    inline bool ShouldRestoreZoom(bool held, bool active, bool restoring)
+    {
+        return active && !held && !restoring;
+    }
+
     inline bool IsPattern(const float* values)
     {
         return std::isfinite(values[0]) && std::isfinite(values[1]) &&

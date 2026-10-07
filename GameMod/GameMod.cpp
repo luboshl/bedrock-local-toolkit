@@ -2955,7 +2955,7 @@ namespace
                     InvalidateRect(g_overlayWindow, nullptr, TRUE);
                 }
 
-                if (!f6Down && f6WasDown && g_zoom.active)
+                if (fov::ShouldRestoreZoom(f6Down, g_zoom.active, g_zoom.restoring))
                 {
                     BeginZoomRestoreTransition();
                     SetOverlayMessage(L"Restoring original FOV", RGB(135, 255, 170));

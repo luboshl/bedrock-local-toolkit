@@ -1,4 +1,4 @@
-$version = Read-Host 'Zadej verzi (např. 1.0.3)'
+$version = Read-Host 'Set version (e.g. 1.0.3)'
 $tag = "v$version"
 
 git switch main

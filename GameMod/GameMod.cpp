@@ -43,6 +43,16 @@ namespace
     constexpr float kMouseSensitivityRuntimeMaximum = 1.0f;
     constexpr float kMouseSensitivityPercentScale = 0.01f;
     constexpr ULONGLONG kDefaultZoomTransitionDurationMs = 180;
+
+    float InterpolateZoomFov(float startValue, float targetValue, ULONGLONG elapsedMs, ULONGLONG durationMs)
+    {
+        if (durationMs == 0 || elapsedMs >= durationMs) return targetValue;
+
+        const float progress = static_cast<float>(elapsedMs) / static_cast<float>(durationMs);
+        const float eased = progress * progress * (3.0f - 2.0f * progress);
+        return startValue + (targetValue - startValue) * eased;
+    }
+
     struct ZoomConfig
     {
         float fov = kDefaultZoomFov;
@@ -98,6 +108,21 @@ namespace
         bool transitionActive = false;
         bool restoring = false;
     };
+
+    bool ScheduleZoomWheelTransition(FovZoomState& zoom, LONG steps, ULONGLONG startedAt)
+    {
+        const float requested = zoom.currentZoomValue - static_cast<float>(steps) * kZoomWheelStep;
+        const float nextValue = (std::clamp)(requested, kZoomMinimumFov, kZoomMaximumFov);
+        if (std::fabs(nextValue - zoom.transitionTargetValue) < kFovMatchTolerance) return false;
+
+        zoom.currentZoomValue = nextValue;
+        zoom.transitionStartValue = zoom.displayedValue;
+        zoom.transitionTargetValue = nextValue;
+        zoom.transitionStartedAt = startedAt;
+        zoom.transitionActive = true;
+        zoom.restoring = false;
+        return true;
+    }
 
     struct ZoomSensitivityState
     {
@@ -1274,12 +1299,6 @@ namespace
             return;
         }
 
-        const float requested = g_zoom.currentZoomValue -
-            static_cast<float>(steps) * kZoomWheelStep;
-        const float nextValue = (std::clamp)(requested, kZoomMinimumFov, kZoomMaximumFov);
-        if (std::fabs(nextValue - g_zoom.transitionTargetValue) < kFovMatchTolerance) return;
-
-        const uintptr_t valueAddress = g_zoom.target.pattern + sizeof(float) * 2;
         float liveValues[5]{};
         if (!ReadFovPattern(g_zoom.target.pattern, liveValues) ||
             std::fabs(liveValues[2] - g_zoom.displayedValue) >= kFovMatchTolerance)
@@ -1292,29 +1311,7 @@ namespace
             return;
         }
 
-        g_zoom.currentZoomValue = nextValue;
-        if (g_zoom.transitionActive)
-        {
-            g_zoom.transitionStartValue = g_zoom.displayedValue;
-            g_zoom.transitionTargetValue = nextValue;
-            g_zoom.transitionStartedAt = GetTickCount64();
-        }
-        else
-        {
-            if (!CompareExchangeFov(valueAddress, g_zoom.displayedValue, nextValue))
-            {
-                const FovRestoreResult restore = RestoreZoom();
-                SetOverlayMessage(restore == FovRestoreResult::Failed ?
-                    L"Zoom restore pending; mouse wheel paused" : L"FOV changed elsewhere; value left untouched",
-                    restore == FovRestoreResult::Failed ? RGB(255, 120, 120) : RGB(255, 220, 120));
-                ClearZoomWheelInput();
-                return;
-            }
-            g_zoom.displayedValue = nextValue;
-            g_zoom.transitionStartValue = nextValue;
-            g_zoom.transitionTargetValue = nextValue;
-            g_zoom.restoring = false;
-        }
+        if (!ScheduleZoomWheelTransition(g_zoom, steps, GetTickCount64())) return;
         float verify[5]{};
         if (!ReadVerifiedTarget(g_zoom.target.options, current, verify) ||
             !fov::SameTarget(current, g_zoom.target) ||
@@ -2435,13 +2432,10 @@ namespace
         if (!g_zoom.active || !g_zoom.transitionActive || g_zoomRestorePending) return;
 
         const ULONGLONG now = GetTickCount64();
-        const float progress = (std::min)(1.0f,
-            static_cast<float>(now - g_zoom.transitionStartedAt) /
-            static_cast<float>(g_zoomConfig.transitionDurationMs));
-        // Smoothstep gives the transition a soft start and stop.
-        const float eased = progress * progress * (3.0f - 2.0f * progress);
-        const float nextValue = g_zoom.transitionStartValue +
-            (g_zoom.transitionTargetValue - g_zoom.transitionStartValue) * eased;
+        const float nextValue = InterpolateZoomFov(g_zoom.transitionStartValue,
+            g_zoom.transitionTargetValue, now - g_zoom.transitionStartedAt,
+            g_zoomConfig.transitionDurationMs);
+        const bool complete = now - g_zoom.transitionStartedAt >= g_zoomConfig.transitionDurationMs;
         if (std::fabs(nextValue - g_zoom.displayedValue) >= kFovMatchTolerance)
         {
             const uintptr_t valueAddress = g_zoom.target.pattern + sizeof(float) * 2;
@@ -2453,7 +2447,7 @@ namespace
             g_zoom.displayedValue = nextValue;
         }
 
-        if (progress >= 1.0f)
+        if (complete)
         {
             g_zoom.displayedValue = g_zoom.transitionTargetValue;
             if (!g_zoom.restoring) g_zoom.currentZoomValue = g_zoom.transitionTargetValue;
@@ -3145,7 +3139,8 @@ namespace
                     ApplyZoom(gameWindow);
                 }
             }
-            Sleep(g_fovScan.result == FovScanResult::Running ? 1 : 16);
+            Sleep(g_fovScan.result == FovScanResult::Running ||
+                (g_zoom.transitionActive && !g_zoomRestorePending) ? 1 : 16);
         }
 
         for (const GameInputHook& hook : g_gameInputHooks)

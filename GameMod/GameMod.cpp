@@ -2667,6 +2667,12 @@ namespace
         AdvanceFovScan();
     }
 
+    UINT OverlayPositionFlags(bool indicatorVisible)
+    {
+        return SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+            (indicatorVisible ? SWP_SHOWWINDOW : 0);
+    }
+
     void UpdateOverlayBounds(HWND gameWindow)
     {
         RECT clientRect{};
@@ -2696,7 +2702,7 @@ namespace
             topLeft.y,
             width,
             height,
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+            OverlayPositionFlags(InterlockedCompareExchange(&g_indicatorVisible, 0, 0) != 0));
     }
 
     LRESULT CALLBACK OverlayWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -2933,7 +2939,6 @@ namespace
 
                 if (f6Down && !f6WasDown && !stopWhenRestored)
                 {
-                    InterlockedExchange(&g_indicatorVisible, 1);
                     if (zoomNeedsRelease)
                     {
                     SetOverlayMessage(L"Release Zoom key after leaving or refocusing the game", RGB(255, 220, 120));
@@ -2972,7 +2977,6 @@ namespace
                 {
                     const bool toggled = fullbright::Toggle();
                     LogFullBrightStatus(toggled ? "toggle" : "toggle-refused");
-                    InterlockedExchange(&g_indicatorVisible, 1);
                     SetOverlayMessage(toggled ? L"Full Bright toggled" : L"Full Bright unavailable; profile refused",
                         toggled ? RGB(135, 255, 170) : RGB(255, 220, 120));
                 }
@@ -2982,7 +2986,6 @@ namespace
                 {
                     const bool toggled = alwaysday::Toggle();
                     LogAlwaysDayStatus(toggled ? "toggle" : "toggle-refused");
-                    InterlockedExchange(&g_indicatorVisible, 1);
                     SetOverlayMessage(toggled ? L"Always day toggled" : L"Always day unavailable; profile refused",
                         toggled ? RGB(135, 255, 170) : RGB(255, 220, 120));
                 }
@@ -2992,7 +2995,6 @@ namespace
                 {
                     const bool toggled = nametag::Toggle();
                     LogNametagStatus(toggled ? "toggle" : "toggle-refused");
-                    InterlockedExchange(&g_indicatorVisible, 1);
                     SetOverlayMessage(toggled ? L"Nametag toggled" :
                         L"Nametag is not ready; no name enabled", toggled ? RGB(135, 255, 170) : RGB(255, 220, 120));
                     UpdateOverlayBounds(gameWindow);
@@ -3027,7 +3029,6 @@ namespace
                     {
                         stopWhenRestored = true;
                         BeginZoomRestoreTransition();
-                        InterlockedExchange(&g_indicatorVisible, 1);
                         SetOverlayMessage(L"Restoring FOV before module exit", RGB(255, 220, 120));
                         UpdateOverlayBounds(gameWindow);
                     }

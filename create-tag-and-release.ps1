@@ -1,5 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
+Set-Location -LiteralPath $PSScriptRoot
+
 git switch main
 if ($LASTEXITCODE -ne 0) { throw 'Could not switch to main.' }
 

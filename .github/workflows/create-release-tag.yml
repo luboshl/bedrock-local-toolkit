@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Optional version override; leave empty to use the next patch version
+        description: Optional version override, including prerelease suffix; leave empty to use the next patch version
         required: false
         type: string
 
@@ -56,8 +56,8 @@ jobs:
               $version = $version.Trim()
           }
 
-          if ($version -notmatch '^\d+\.\d+\.\d+$') {
-              throw "Invalid version '$version'. Use MAJOR.MINOR.PATCH format, for example $suggestedVersion."
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+              throw "Invalid version '$version'. Use MAJOR.MINOR.PATCH with an optional prerelease suffix, for example $suggestedVersion or $suggestedVersion-pre01."
           }
 
           $tag = "v$version"

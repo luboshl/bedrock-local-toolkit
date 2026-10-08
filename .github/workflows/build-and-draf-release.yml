@@ -52,7 +52,12 @@ jobs:
           $archive = Join-Path $env:RUNNER_TEMP "bedrock-local-toolkit-$tag-win-x64.zip"
           Compress-Archive -Path 'artifacts\launcher\*' -DestinationPath $archive -CompressionLevel Optimal
 
-          & gh release create $tag $archive --draft --generate-notes --title $tag
+          $releaseArguments = @('release', 'create', $tag, $archive, '--draft', '--generate-notes', '--title', $tag)
+          if ($tag -match '-') {
+              $releaseArguments += '--prerelease'
+          }
+
+          & gh @releaseArguments
           if ($LASTEXITCODE -ne 0) {
               throw "Failed to create draft GitHub Release for $tag."
           }

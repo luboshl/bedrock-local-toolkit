@@ -34,7 +34,7 @@ Always day and Full Bright are enabled automatically after their profiles are ve
 
 Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Set `FirstPersonFov` and `ThirdPersonFov` separately under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script copies the configuration next to the launcher. The older `Fov` setting remains supported as a fallback for both perspectives.
 
-Module shortcuts work only on verified gameplay screens. In chat, menus, and other text entry screens, keys and the mouse wheel remain available to Minecraft. Opening one of these screens restores active Zoom; release any held shortcut before using it again after returning to gameplay. This screen filtering passes isolated tests but still needs in-game verification.
+Module shortcuts work only on verified gameplay screens. In chat, menus, and other text entry screens, keys and the mouse wheel remain available to Minecraft. Opening one of these screens restores the original FOV and ends active Zoom; release any held shortcut before using it again after returning to gameplay. This screen filtering passes isolated tests but still needs in-game verification.
 
 ## Compatibility
 

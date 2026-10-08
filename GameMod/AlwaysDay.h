@@ -14,7 +14,7 @@ namespace alwaysday
     struct alignas(16) BridgeData
     {
         volatile LONG enabled = 0;
-        LONG profileVersion = 4;
+        LONG profileVersion = 5;
         uintptr_t continuation = 0;
         uintptr_t callers[kCallerCount]{};
         volatile LONG64 overrides[kCallerCount]{};
@@ -28,12 +28,18 @@ namespace alwaysday
         uintptr_t skyColourCaller = 0;
         uintptr_t celestialContinuation = 0;
         volatile LONG64 celestialOverrides = 0;
+        uintptr_t directionCallers[2]{};
+        uintptr_t sunFacingCallers[2]{};
+        uintptr_t cameraSkyColourCaller = 0;
+        uintptr_t cameraSunriseCaller = 0;
         alignas(16) uint32_t alphaMask[4]{0, 0, 0, UINT32_MAX};
         alignas(16) uint32_t whiteRgb[4]{0x3F800000, 0x3F800000, 0x3F800000, 0};
     };
     static_assert(offsetof(BridgeData, starsContinuation) == 24 + 16 * kCallerCount);
     static_assert(offsetof(BridgeData, skyBrightnessCaller) == 56 + 16 * kCallerCount);
     static_assert(offsetof(BridgeData, celestialOverrides) == 104 + 16 * kCallerCount);
+    static_assert(offsetof(BridgeData, directionCallers) == 112 + 16 * kCallerCount);
+    static_assert(offsetof(BridgeData, cameraSunriseCaller) == 152 + 16 * kCallerCount);
     static_assert(offsetof(BridgeData, alphaMask) % 16 == 0 && offsetof(BridgeData, whiteRgb) % 16 == 0);
     static_assert(sizeof(BridgeData) <= nametag::kAllocationSize - nametag::kDataOffset);
 
@@ -96,7 +102,14 @@ namespace alwaysday
             std::make_tuple(kSunriseContext0Rva, kSunriseContext0Bytes, sizeof(kSunriseContext0Bytes)),
             std::make_tuple(kSunriseContext1Rva, kSunriseContext1Bytes, sizeof(kSunriseContext1Bytes)),
             std::make_tuple(kSunriseContext2Rva, kSunriseContext2Bytes, sizeof(kSunriseContext2Bytes)),
-            std::make_tuple(kSkyColourContextRva, kSkyColourContextBytes, sizeof(kSkyColourContextBytes))})
+            std::make_tuple(kSkyColourContextRva, kSkyColourContextBytes, sizeof(kSkyColourContextBytes)),
+            std::make_tuple(kDirectionFunctionRva, kDirectionFunctionBytes, sizeof(kDirectionFunctionBytes)),
+            std::make_tuple(kSunFacingFunctionRva, kSunFacingFunctionBytes, sizeof(kSunFacingFunctionBytes)),
+            std::make_tuple(kDirectionContext0Rva, kDirectionContext0Bytes, sizeof(kDirectionContext0Bytes)),
+            std::make_tuple(kDirectionContext1Rva, kDirectionContext1Bytes, sizeof(kDirectionContext1Bytes)),
+            std::make_tuple(kSunFacingContext0Rva, kSunFacingContext0Bytes, sizeof(kSunFacingContext0Bytes)),
+            std::make_tuple(kSunFacingContext1Rva, kSunFacingContext1Bytes, sizeof(kSunFacingContext1Bytes)),
+            std::make_tuple(kCameraColourContextRva, kCameraColourContextBytes, sizeof(kCameraColourContextBytes))})
             if (!IsCode(base, std::get<0>(context), std::get<2>(context)) ||
                 !Matches(base + std::get<0>(context), std::get<1>(context), std::get<2>(context))) return false;
         const unsigned char cloudName[] = "CloudColor";
@@ -147,9 +160,17 @@ namespace alwaysday
             else if (kRenderCallers[i].returnRva == kSunriseReturnRva)
                 requireParent(0x70, {reinterpret_cast<uintptr_t>(&state->sunriseCallers[0]),
                     reinterpret_cast<uintptr_t>(&state->sunriseCallers[1]),
-                    reinterpret_cast<uintptr_t>(&state->sunriseCallers[2])});
+                    reinterpret_cast<uintptr_t>(&state->sunriseCallers[2]),
+                    reinterpret_cast<uintptr_t>(&state->cameraSunriseCaller)});
             else if (kRenderCallers[i].returnRva == kSkyColourReturnRva)
-                requireParent(0xC0, {reinterpret_cast<uintptr_t>(&state->skyColourCaller)});
+                requireParent(0xC0, {reinterpret_cast<uintptr_t>(&state->skyColourCaller),
+                    reinterpret_cast<uintptr_t>(&state->cameraSkyColourCaller)});
+            else if (kRenderCallers[i].returnRva == kDirectionReturnRva)
+                requireParent(0x70, {reinterpret_cast<uintptr_t>(&state->directionCallers[0]),
+                    reinterpret_cast<uintptr_t>(&state->directionCallers[1])});
+            else if (kRenderCallers[i].returnRva == kSunFacingReturnRva)
+                requireParent(0xB0, {reinterpret_cast<uintptr_t>(&state->sunFacingCallers[0]),
+                    reinterpret_cast<uintptr_t>(&state->sunFacingCallers[1])});
             code.Rip({0xF0, 0x48, 0xFF, 0x05}, reinterpret_cast<uintptr_t>(&state->overrides[i]));
             accepted[i] = code.Jump();
             code.Bind(next);
@@ -302,6 +323,12 @@ namespace alwaysday
         data->skyBrightnessCaller = base + kSkyBrightnessReturnRva;
         for (size_t i = 0; i < 3; ++i) data->sunriseCallers[i] = base + kSunriseParents[i];
         data->skyColourCaller = base + kSkyColourParent;
+        data->cameraSkyColourCaller = base + kCameraSkyColourParent;
+        data->cameraSunriseCaller = base + kCameraSunriseParent;
+        for (size_t i = 0; i < 2; ++i) {
+            data->directionCallers[i] = base + kDirectionParents[i];
+            data->sunFacingCallers[i] = base + kSunFacingParents[i];
+        }
         data->celestialContinuation = base + kCelestialPatchRva + sizeof(kCelestialOriginal);
         data->starsContinuation = base + kStarsPatchRva + sizeof(kStarsOriginal);
         data->cloudContinuation = base + kCloudPatchRva + sizeof(kCloudOriginal);

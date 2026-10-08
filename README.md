@@ -34,6 +34,8 @@ Always day and Full Bright are enabled automatically after their profiles are ve
 
 Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Set `FirstPersonFov` and `ThirdPersonFov` separately under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script copies the configuration next to the launcher. The older `Fov` setting remains supported as a fallback for both perspectives.
 
+Module shortcuts work only on verified gameplay screens. In chat, menus, and other text entry screens, keys and the mouse wheel remain available to Minecraft. Opening one of these screens restores the original FOV and ends active Zoom; release any held shortcut before using it again after returning to gameplay. This screen filtering passes isolated tests but still needs in-game verification.
+
 ## Compatibility
 
 - **Operating system:** Windows, x64.
@@ -101,7 +103,7 @@ GitHub Actions builds the project and runs the automated tests for pull requests
 ## Troubleshooting
 
 - **The launcher rejects the game:** Check that the installed package is exactly `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe`. Other builds are not supported.
-- **A shortcut does not work:** Check [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini) and make sure every configured shortcut is distinct and listed under `[Shortcuts]`.
+- **A shortcut does not work:** Return to gameplay, release the key, and check [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini) for distinct shortcuts under `[Shortcuts]`. Shortcuts also remain disabled while screen discovery is incomplete or cannot safely identify the active screen; see `screen_profile` and `screen_client` in `zoom-status-<PID>.log`.
 - **A feature behaves differently than expected:** Check its verification status in [Features](#features); some behavior has not yet been tested in-game.
 - **The build fails:** Confirm that the x64 MSVC tools, Windows SDK, and .NET 10 SDK are installed, then review the build output.
 

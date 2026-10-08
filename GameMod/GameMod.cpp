@@ -26,6 +26,7 @@
 #include "Nametag.h"
 #include "AlwaysDay.h"
 #include "FullBright.h"
+#include "ScreenInput.h"
 
 namespace
 {
@@ -301,6 +302,12 @@ namespace
     ZoomSensitivityState g_zoomSensitivity;
     FovPointerConfig g_fovPointerConfig;
     FovScanState g_fovScan;
+    screens::Discovery g_screenDiscovery;
+    volatile LONG g_shortcutNeedsRelease[256]{};
+    constexpr LONG kZoomReleasePassRawInput = 1;
+    constexpr LONG kZoomReleasePassMessage = 2;
+    constexpr LONG kZoomReleasePassAll = kZoomReleasePassRawInput | kZoomReleasePassMessage;
+    volatile LONG g_zoomReleasePassPending = 0;
     uintptr_t g_gameModuleBase = 0;
     bool g_supportedBuild = false;
     volatile LONG g_zoomReadiness = 0; // 0 starting, 1 searching, 2 ready, 3 refused
@@ -369,6 +376,36 @@ namespace
     {
         return gameWindow != nullptr && IsWindowVisible(gameWindow) &&
             !IsIconic(gameWindow) && IsGameForeground(gameWindow);
+    }
+
+    bool ModuleShortcutsAllowed(HWND gameWindow)
+    {
+        return IsGameActive(gameWindow) && screens::AllowsShortcuts();
+    }
+
+    bool ShortcutNeedsRelease(int key)
+    {
+        return key > 0 && key < 256 && InterlockedCompareExchange(&g_shortcutNeedsRelease[key], 0, 0) != 0;
+    }
+
+    void ObserveShortcut(int key, bool down, bool allowed)
+    {
+        if (key <= 0 || key >= 256) return;
+        if (!down) InterlockedExchange(&g_shortcutNeedsRelease[key], 0);
+        else if (!allowed) InterlockedExchange(&g_shortcutNeedsRelease[key], 1);
+    }
+
+    bool AcknowledgeZoomKeyReleasePass(LONG inputPath)
+    {
+        LONG pending = InterlockedCompareExchange(&g_zoomReleasePassPending, 0, 0);
+        while ((pending & inputPath) != 0)
+        {
+            const LONG remaining = pending & ~inputPath;
+            const LONG previous = InterlockedCompareExchange(&g_zoomReleasePassPending, remaining, pending);
+            if (previous == pending) return true;
+            pending = previous;
+        }
+        return false;
     }
 
     bool IsZoomKeyDown()
@@ -508,12 +545,13 @@ namespace
         if (g_statusLogPath.empty()) return;
         char line[512]{};
         const int length = sprintf_s(line,
-            "pid=%lu event=%s result=%d elapsed_ms=%llu bytes=%llu matches=%u options=0x%llX pattern=0x%llX owner=0x%llX\r\n",
+            "pid=%lu event=%s result=%d elapsed_ms=%llu bytes=%llu matches=%u options=0x%llX pattern=0x%llX owner=0x%llX screen_profile=%d screen_client=0x%llX\r\n",
             GetCurrentProcessId(), event, static_cast<int>(g_fovScan.result),
             GetTickCount64() - g_fovScan.startedAt, static_cast<unsigned long long>(g_fovScan.bytesScanned),
             g_fovScan.matches, static_cast<unsigned long long>(g_fovScan.foundTarget.options),
             static_cast<unsigned long long>(g_fovScan.foundTarget.pattern),
-            static_cast<unsigned long long>(g_fovScan.foundTarget.owner));
+            static_cast<unsigned long long>(g_fovScan.foundTarget.owner), screens::profileValid ? 1 : 0,
+            static_cast<unsigned long long>(screens::client.load()));
         const HANDLE file = CreateFileW(g_statusLogPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file != INVALID_HANDLE_VALUE)
@@ -993,6 +1031,11 @@ namespace
         if (!matchesCode(0x2D1560, kNativeMouseEntries[0]) || !matchesCode(0x361AD0, kNativeMouseEntries[1]) ||
             !matchesCode(0x8CE04, wheelCall) || !matchesCode(0x8CE3B, eventCall) ||
             !matchesCode(0x8CD5F, wheelDelta)) return false;
+        if (!screens::Initialize(g_gameModuleBase, true))
+        {
+            LogZoomStatus("screen-profile-rejected");
+            return false;
+        }
         g_supportedBuild = true;
         return true;
     }
@@ -1161,9 +1204,9 @@ namespace
             SetOverlayMessage(L"Zoom unavailable; input capture could not be installed", RGB(255, 170, 110));
             return;
         }
-        if (!IsGameActive(gameWindow))
+        if (!ModuleShortcutsAllowed(gameWindow))
         {
-            SetOverlayMessage(L"Minecraft must be active; no memory changed", RGB(255, 170, 110));
+            SetOverlayMessage(L"Zoom requires a verified gameplay screen; no memory changed", RGB(255, 170, 110));
             return;
         }
 
@@ -1199,10 +1242,10 @@ namespace
             return;
         }
 
-        if (!IsGameActive(gameWindow) || !IsZoomKeyDown() ||
+        if (!ModuleShortcutsAllowed(gameWindow) || ShortcutNeedsRelease(g_zoomConfig.zoomKey) || !IsZoomKeyDown() ||
             (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0)
         {
-            SetOverlayMessage(L"Minecraft lost focus; no memory changed", RGB(255, 170, 110));
+            SetOverlayMessage(L"Zoom input context changed; no memory changed", RGB(255, 170, 110));
             return;
         }
 
@@ -1315,7 +1358,8 @@ namespace
     void ApplyZoomWheel(HWND gameWindow, bool f6Down)
     {
         const LONG pending = InterlockedExchange(&g_pendingZoomWheel, 0);
-        if (!g_zoom.active || g_zoom.restoring || g_zoomRestorePending || !f6Down || !IsGameActive(gameWindow))
+        if (!g_zoom.active || g_zoom.restoring || g_zoomRestorePending || !f6Down ||
+            !ModuleShortcutsAllowed(gameWindow) || ShortcutNeedsRelease(g_zoomConfig.zoomKey))
         {
             g_zoomWheelRemainder = 0;
             return;
@@ -1374,7 +1418,8 @@ namespace
         return g_zoom.active && !g_zoom.restoring && !g_zoomRestorePending &&
             g_trackedGameWindow != nullptr &&
             IsZoomKeyDown() &&
-            (GetAsyncKeyState(VK_ESCAPE) & 0x8000) == 0 && IsGameActive(g_trackedGameWindow);
+            (GetAsyncKeyState(VK_ESCAPE) & 0x8000) == 0 && ModuleShortcutsAllowed(g_trackedGameWindow) &&
+            !ShortcutNeedsRelease(g_zoomConfig.zoomKey);
     }
 
     void CaptureLegacyWheel(SHORT delta)
@@ -1418,13 +1463,16 @@ namespace
         mouse.usButtonData = 0;
     }
 
-    void FilterRawInputZoomKey(RAWINPUT& input)
+    void FilterRawInputZoomKey(RAWINPUT& input, bool shortcutsAllowed)
     {
         static volatile LONG suppressedLogged = 0;
-        if (input.header.dwType != RIM_TYPEKEYBOARD || !IsGameActive(g_trackedGameWindow)) return;
+        if (input.header.dwType != RIM_TYPEKEYBOARD) return;
 
         RAWKEYBOARD& keyboard = input.data.keyboard;
         if (keyboard.VKey != static_cast<USHORT>(g_zoomConfig.zoomKey)) return;
+        if ((keyboard.Flags & RI_KEY_BREAK) != 0 &&
+            AcknowledgeZoomKeyReleasePass(kZoomReleasePassRawInput)) return;
+        if (!shortcutsAllowed || ShortcutNeedsRelease(g_zoomConfig.zoomKey)) return;
         keyboard.MakeCode = 0;
         keyboard.Flags = RI_KEY_BREAK;
         keyboard.VKey = 0;
@@ -1434,6 +1482,11 @@ namespace
         {
             LogZoomStatus("rawinput-zoom-key-suppressed");
         }
+    }
+
+    void FilterRawInputZoomKey(RAWINPUT& input)
+    {
+        FilterRawInputZoomKey(input, ModuleShortcutsAllowed(g_trackedGameWindow));
     }
 
     UINT WINAPI FilteredGetRawInputData(HRAWINPUT rawInput, UINT command, LPVOID data,
@@ -1681,7 +1734,8 @@ namespace
     {
         const uintptr_t device = GetGameInputDeviceIdentity(reading);
         if (device == 0) return;
-        const LONG scaleBasisPoints = InterlockedCompareExchange(&g_zoomMouseScalingActive, 0, 0) != 0 ?
+        const LONG scaleBasisPoints = InterlockedCompareExchange(&g_zoomMouseScalingActive, 0, 0) != 0 &&
+            ModuleShortcutsAllowed(g_trackedGameWindow) && !ShortcutNeedsRelease(g_zoomConfig.zoomKey) ?
             InterlockedCompareExchange(&g_zoomMouseScaleBasisPoints, 0, 0) : 10'000;
         AcquireSRWLockExclusive(&g_mousePositionScaleLock);
         unsigned int index = 0;
@@ -1830,10 +1884,12 @@ namespace
         return result;
     }
 
-    uint32_t FilterZoomKey(GameInputKeyState* stateArray, uint32_t stateArrayCount, uint32_t validCount)
+    uint32_t FilterZoomKey(GameInputKeyState* stateArray, uint32_t stateArrayCount, uint32_t validCount,
+        bool shortcutsAllowed)
     {
         static volatile LONG suppressedLogged = 0;
-        if (stateArray == nullptr || !IsGameActive(g_trackedGameWindow)) return validCount;
+        if (stateArray == nullptr || !shortcutsAllowed ||
+            ShortcutNeedsRelease(g_zoomConfig.zoomKey)) return validCount;
 
         const uint32_t boundedCount = (std::min)(stateArrayCount, validCount);
         for (uint32_t index = 0; index < boundedCount; ++index)
@@ -1851,6 +1907,11 @@ namespace
             return validCount - 1;
         }
         return validCount;
+    }
+
+    uint32_t FilterZoomKey(GameInputKeyState* stateArray, uint32_t stateArrayCount, uint32_t validCount)
+    {
+        return FilterZoomKey(stateArray, stateArrayCount, validCount, ModuleShortcutsAllowed(g_trackedGameWindow));
     }
 
     uint32_t STDMETHODCALLTYPE FilteredGameInputGetKeyState(IGameInputReading* reading,
@@ -1872,10 +1933,15 @@ namespace
         return FilterZoomKey(stateArray, stateArrayCount, validCount);
     }
 
-    bool ShouldHideZoomKeyFromGame()
+    bool ShouldHideZoomKeyFromGame(bool shortcutsAllowed)
     {
         return g_zoomConfig.zoomKey > 0 && g_zoomConfig.zoomKey <= 0xFF &&
-            IsGameActive(g_trackedGameWindow);
+            shortcutsAllowed && !ShortcutNeedsRelease(g_zoomConfig.zoomKey);
+    }
+
+    bool ShouldHideZoomKeyFromGame()
+    {
+        return ShouldHideZoomKeyFromGame(ModuleShortcutsAllowed(g_trackedGameWindow));
     }
 
     SHORT WINAPI FilteredGetAsyncKeyState(int virtualKey)
@@ -2405,7 +2471,11 @@ namespace
         if (code >= 0 && removeFlag == PM_REMOVE && data != 0)
         {
             auto* message = reinterpret_cast<MSG*>(data);
-            if (ShouldHideZoomKeyFromGame() &&
+            const bool zoomKeyUp = (message->message == WM_KEYUP || message->message == WM_SYSKEYUP) &&
+                message->wParam == static_cast<WPARAM>(g_zoomConfig.zoomKey);
+            const bool passZoomKeyUp = zoomKeyUp &&
+                AcknowledgeZoomKeyReleasePass(kZoomReleasePassMessage);
+            if (!passZoomKeyUp && ShouldHideZoomKeyFromGame() &&
                 (message->message == WM_KEYDOWN || message->message == WM_KEYUP ||
                     message->message == WM_SYSKEYDOWN || message->message == WM_SYSKEYUP) &&
                 message->wParam == static_cast<WPARAM>(g_zoomConfig.zoomKey))
@@ -2435,20 +2505,29 @@ namespace
         if (code == HC_ACTION && data != 0)
         {
             const auto* keyboard = reinterpret_cast<const KBDLLHOOKSTRUCT*>(data);
+            const bool keyDown = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+            const bool keyUp = message == WM_KEYUP || message == WM_SYSKEYUP;
+            const bool neededRelease = ShortcutNeedsRelease(static_cast<int>(keyboard->vkCode));
+            if (keyboard->vkCode == static_cast<DWORD>(g_zoomConfig.zoomKey) && keyUp && neededRelease)
+                InterlockedExchange(&g_zoomReleasePassPending, kZoomReleasePassAll);
+            for (const int key : {g_zoomConfig.zoomKey, g_zoomConfig.nametagKey, g_zoomConfig.alwaysDayKey,
+                g_zoomConfig.fullBrightKey, g_zoomConfig.indicatorKey, g_zoomConfig.exitKey})
+            {
+                if (keyboard->vkCode == static_cast<DWORD>(key) && (keyDown || keyUp))
+                    ObserveShortcut(key, keyDown, ModuleShortcutsAllowed(g_trackedGameWindow));
+            }
             if (keyboard->vkCode == static_cast<DWORD>(g_zoomConfig.zoomKey))
             {
-                const bool keyDown = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
-                const bool keyUp = message == WM_KEYUP || message == WM_SYSKEYUP;
                 const bool gameActive = IsGameActive(g_trackedGameWindow);
                 bool stateChanged = false;
                 if (keyUp) stateChanged = InterlockedExchange(&g_zoomKeyDown, 0) != 0;
-                if (keyDown && gameActive) stateChanged = InterlockedExchange(&g_zoomKeyDown, 1) == 0;
+                if (keyDown) stateChanged = InterlockedExchange(&g_zoomKeyDown, 1) == 0;
                 if (stateChanged && gameActive)
                 {
                     InterlockedIncrement(&g_zoomInputEpoch);
                     LogZoomStatus(keyDown ? "zoom-key-down" : "zoom-key-up");
                 }
-                if ((keyDown || keyUp) && gameActive)
+                if ((keyDown || keyUp) && !(keyUp && neededRelease) && ShouldHideZoomKeyFromGame())
                 {
                     // The configured Zoom shortcut is handled locally; letting it
                     // reach the game can also trigger a held gameplay binding.
@@ -2651,6 +2730,7 @@ namespace
                 {
                     const uintptr_t scratch = reinterpret_cast<uintptr_t>(g_fovScan.buffer.data());
                     if (options >= scratch && options - scratch < g_fovScan.buffer.size()) return true;
+                    if (g_screenDiscovery.Contains(options)) return true;
                     fov::Target target;
                     float values[5]{};
                     if (!ReadVerifiedTarget(options, target, values)) return true;
@@ -2883,6 +2963,8 @@ namespace
         bool detachWasDown = false;
         bool zoomNeedsRelease = false;
         bool stopWhenRestored = false;
+        bool shortcutsWereAllowed = false;
+        screens::Discovery::State lastScreenDiscoveryState = screens::Discovery::State::Idle;
         ULONGLONG lastRawApiHookScanAt = 0;
         ULONGLONG lastGameInputHookScanAt = 0;
         bool rawInputHookStatusLogged = false;
@@ -2954,11 +3036,22 @@ namespace
                 }
                 lastGameInputHookScanAt = loopTime;
             }
-            const bool active = IsGameActive(gameWindow);
+            const bool foreground = IsGameActive(gameWindow);
+            const bool active = foreground && screens::AllowsShortcuts();
+            if (active != shortcutsWereAllowed)
+            {
+                LogZoomStatus(active ? "gameplay-shortcuts-allowed" : "screen-shortcuts-blocked");
+                shortcutsWereAllowed = active;
+            }
+            for (const int key : {g_zoomConfig.zoomKey, g_zoomConfig.nametagKey, g_zoomConfig.alwaysDayKey,
+                g_zoomConfig.fullBrightKey, g_zoomConfig.indicatorKey, g_zoomConfig.exitKey})
+                ObserveShortcut(key, key == g_zoomConfig.zoomKey ? IsZoomKeyDown() :
+                    (GetAsyncKeyState(key) & 0x8000) != 0, active);
 
             if (active)
             {
                 const bool f6Down = IsZoomKeyDown();
+                if (ShortcutNeedsRelease(g_zoomConfig.zoomKey)) zoomNeedsRelease = true;
                 if (zoomNeedsRelease && !f6Down)
                 {
                     zoomNeedsRelease = false;
@@ -3013,7 +3106,8 @@ namespace
                 }
 
                 const bool brightDown = (GetAsyncKeyState(g_zoomConfig.fullBrightKey) & 0x8000) != 0;
-                if (brightDown && !brightWasDown && !stopWhenRestored)
+                if (brightDown && !brightWasDown && !stopWhenRestored &&
+                    !ShortcutNeedsRelease(g_zoomConfig.fullBrightKey) && ModuleShortcutsAllowed(gameWindow))
                 {
                     const bool toggled = fullbright::Toggle();
                     LogFullBrightStatus(toggled ? "toggle" : "toggle-refused");
@@ -3022,7 +3116,8 @@ namespace
                 }
                 brightWasDown = brightDown;
                 const bool dayDown = (GetAsyncKeyState(g_zoomConfig.alwaysDayKey) & 0x8000) != 0;
-                if (dayDown && !dayWasDown && !stopWhenRestored)
+                if (dayDown && !dayWasDown && !stopWhenRestored &&
+                    !ShortcutNeedsRelease(g_zoomConfig.alwaysDayKey) && ModuleShortcutsAllowed(gameWindow))
                 {
                     const bool toggled = alwaysday::Toggle();
                     LogAlwaysDayStatus(toggled ? "toggle" : "toggle-refused");
@@ -3031,7 +3126,8 @@ namespace
                 }
                 dayWasDown = dayDown;
                 const bool f7Down = (GetAsyncKeyState(g_zoomConfig.nametagKey) & 0x8000) != 0;
-                if (f7Down && !f7WasDown && !stopWhenRestored)
+                if (f7Down && !f7WasDown && !stopWhenRestored &&
+                    !ShortcutNeedsRelease(g_zoomConfig.nametagKey) && ModuleShortcutsAllowed(gameWindow))
                 {
                     const bool toggled = nametag::Toggle();
                     LogNametagStatus(toggled ? "toggle" : "toggle-refused");
@@ -3042,7 +3138,8 @@ namespace
                 f7WasDown = f7Down;
 
                 const bool indicatorDown = (GetAsyncKeyState(g_zoomConfig.indicatorKey) & 0x8000) != 0;
-                if (indicatorDown && !indicatorWasDown)
+                if (indicatorDown && !indicatorWasDown && !ShortcutNeedsRelease(g_zoomConfig.indicatorKey) &&
+                    ModuleShortcutsAllowed(gameWindow))
                 {
                     const LONG newVisibility = InterlockedCompareExchange(&g_indicatorVisible, 0, 0) == 0 ? 1 : 0;
                     InterlockedExchange(&g_indicatorVisible, newVisibility);
@@ -3059,7 +3156,8 @@ namespace
                 indicatorWasDown = indicatorDown;
 
                 const bool detachDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
-                if (detachDown && !detachWasDown)
+                if (detachDown && !detachWasDown && !ShortcutNeedsRelease(g_zoomConfig.exitKey) &&
+                    ModuleShortcutsAllowed(gameWindow))
                 {
                     if (!g_zoom.active)
                     {
@@ -3090,22 +3188,22 @@ namespace
                 if (g_zoom.active)
                 {
                     BeginZoomRestoreTransition();
-                    SetOverlayMessage(L"Restoring original FOV after focus loss", RGB(135, 255, 170));
+                    SetOverlayMessage(L"Restoring original FOV after leaving gameplay", RGB(135, 255, 170));
                 }
 
-                indicatorWasDown = false;
+                indicatorWasDown = (GetAsyncKeyState(g_zoomConfig.indicatorKey) & 0x8000) != 0;
                 brightWasDown = (GetAsyncKeyState(g_zoomConfig.fullBrightKey) & 0x8000) != 0;
                 dayWasDown = (GetAsyncKeyState(g_zoomConfig.alwaysDayKey) & 0x8000) != 0;
                 f7WasDown = (GetAsyncKeyState(g_zoomConfig.nametagKey) & 0x8000) != 0;
                 escapeWasDown = false;
-                detachWasDown = false;
+                detachWasDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
                 if (IsWindowVisible(g_overlayWindow))
                 {
                     ShowWindow(g_overlayWindow, SW_HIDE);
                 }
             }
 
-            if (active && g_zoomRestorePending && g_zoom.active)
+            if (foreground && g_zoomRestorePending && g_zoom.active)
             {
                 const FovRestoreResult restore = RestoreZoom();
                 if (restore == FovRestoreResult::Restored)
@@ -3152,6 +3250,13 @@ namespace
 
             if (InterlockedCompareExchange(&g_stopRequested, 0, 0) == 0 && !stopWhenRestored)
             {
+                g_screenDiscovery.Advance(reinterpret_cast<uintptr_t>(g_fovScan.buffer.data()), g_fovScan.buffer.size());
+                if (g_screenDiscovery.state != lastScreenDiscoveryState)
+                {
+                    if (g_screenDiscovery.state == screens::Discovery::State::Ready) LogZoomStatus("screen-client-ready");
+                    if (g_screenDiscovery.state == screens::Discovery::State::Refused) LogZoomStatus("screen-discovery-refused");
+                    lastScreenDiscoveryState = g_screenDiscovery.state;
+                }
                 if (GetTickCount64() - lastBrightLog >= 5'000 && InterlockedCompareExchange(&fullbright::enabled, 0, 0))
                 {
                     LogFullBrightStatus("runtime");
@@ -3173,10 +3278,10 @@ namespace
                     lastOwnChecks = checks;
                     lastNametagLog = GetTickCount64();
                 }
-                if (!g_zoom.active && fov::MayActivate(active,
+                if (!g_zoom.active && fov::MayActivate(ModuleShortcutsAllowed(gameWindow),
                     IsZoomKeyDown(),
                     (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0,
-                    zoomNeedsRelease, g_zoomRestorePending, stopWhenRestored,
+                    zoomNeedsRelease || ShortcutNeedsRelease(g_zoomConfig.zoomKey), g_zoomRestorePending, stopWhenRestored,
                     g_fovScan.result == FovScanResult::Unique))
                 {
                     ApplyZoom(gameWindow);
@@ -3259,6 +3364,11 @@ extern "C" __declspec(dllexport) DWORD WINAPI StartGameMod(LPVOID)
     g_zoomRestorePending = false;
     g_fovPointerConfig = {};
     g_fovScan = {};
+    g_screenDiscovery = {};
+    screens::client.store(0);
+    screens::profileValid = false;
+    for (auto& blocked : g_shortcutNeedsRelease) InterlockedExchange(&blocked, 0);
+    InterlockedExchange(&g_zoomReleasePassPending, 0);
     g_supportedBuild = false;
     g_gameModuleBase = 0;
     InterlockedExchange(&g_zoomReadiness, 0);

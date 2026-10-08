@@ -10,7 +10,7 @@ The only supported package is `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8
 
 | Feature | Control | Behavior and verification status |
 | --- | --- | --- |
-| Zoom | C (hold), mouse wheel | Local FOV with a transition, restored when the key is released, Esc is pressed, or focus is lost. FOV and sensitivity change only after the target settings have been uniquely verified. The current input path has not yet been verified in-game since the global mouse hook was removed. |
+| Zoom | C (hold), mouse wheel | Local FOV with a transition, restored when the key is released, Esc is pressed, focus is lost, or the active screen leaves gameplay. FOV and sensitivity change only after the target settings have been uniquely verified. The current input path and screen filtering have not yet been verified in-game. |
 | Always day | F6 | Keeps the local sun overhead at noon, the moon below the horizon, and the sky in its daytime phase without sunrise/sunset transitions. Changes only profiled temporary rendering inputs; world time continues normally. The user reported incorrect/moving celestial position in Fancy graphics (issue #22). Profile v5 covers the shared rotation and camera colour paths and passes complete native day-cycle and restoration tests; its final visual result awaits an in-game retest. |
 | Nametag | F7 | Custom name in both third-person views; uses the original renderer and depth testing for both text and background. Verified in a local game. |
 | Status indicator | F9 | Show or hide the local indicator. |
@@ -20,6 +20,8 @@ The only supported package is `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8
 Zoom values are configured in `[Zoom]` and feature shortcuts in `[Shortcuts]` in `config\bedrock-toolkit.ini`; the build script copies it next to the launcher. `FirstPersonFov` and `ThirdPersonFov` default to 15 and 28 respectively; the legacy `Fov` setting remains a fallback for both. All shortcuts must be supported and distinct. If `bedrock-toolkit.ini` is missing, the launcher and module use their defaults. If sensitivity, FOV, or camera perspective cannot be safely identified, the module must not attempt a blind write.
 
 Always day and Full Bright start enabled after their rendering profiles are verified. Nametag starts enabled once valid camera options are available. Their configured shortcuts toggle them off and on. Zoom preparation starts automatically, but Zoom remains hold-to-use as described above.
+
+All module shortcuts require a foreground game window and a verified gameplay screen (`hud_screen`, `f1_screen`, `f3_screen`, or `zoom_screen`). Chat, menus, text entry screens, and unknown or unreadable screen state must leave keyboard and wheel input available to the game. Only the native non-interactive `debug_screen` and `toast_screen` layers may be skipped. A key held outside gameplay must be released before it can activate a module shortcut after returning to gameplay. Screen discovery must verify the supported native profile and find exactly one valid client; incomplete or ambiguous discovery must deny shortcuts. This is a screen allowlist, not per-character or chat-open-key tracking.
 
 ## Security and Implementation Requirements
 

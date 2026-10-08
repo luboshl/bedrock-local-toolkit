@@ -41,3 +41,5 @@ Requirements and the build command are documented in [README.md](README.md). Tes
 Read-only diagnostic tools for this build are in [diagnostics/](diagnostics/README.md). Reference RVAs and persistent findings for troubleshooting and future porting are in [FINDINGS.md](FINDINGS.md); the exact bytes for the supported profile remain in the source headers.
 
 Compatibility claims apply only to the listed build. Multiplayer, other versions, dimensions, and graphics modes are not designated as supported. After changing the input path or rendering profile, distinguish successful builds, automated tests, and practical in-game verification again.
+
+The gameplay/Zoom stutter changes (issue #30) pass isolated transition-timing, asynchronous diagnostic snapshots, blocked-writer shutdown, pending-restoration diagnostics, message-hook ownership, and input-aware wait tests. Sprint-jumping, camera movement, Zoom transitions in both directions, wheel adjustments, and screen/focus changes still require an in-game retest; automated timing checks do not establish smooth live frame pacing.

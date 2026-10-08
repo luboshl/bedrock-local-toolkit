@@ -111,6 +111,231 @@ namespace
             "positioning a visible overlay keeps it shown");
     }
 
+    struct DiagnosticWriterScope
+    {
+        HANDLE releaseOnShutdown = nullptr;
+
+        DiagnosticWriterScope() { Check(g_diagnosticWriter.Start(), "diagnostic writer starts"); }
+        DiagnosticWriterScope(diagnostics::Writer::Sink sink, void* context, HANDLE release)
+            : releaseOnShutdown(release)
+        {
+            Check(g_diagnosticWriter.Start(sink, context), "test diagnostic writer starts");
+        }
+
+        void Stop()
+        {
+            if (releaseOnShutdown != nullptr) SetEvent(releaseOnShutdown);
+            g_diagnosticWriter.BeginShutdown();
+            const ULONGLONG deadline = GetTickCount64() + 5000;
+            while (!g_diagnosticWriter.FinishShutdown())
+            {
+                Check(GetTickCount64() < deadline, "diagnostic writer finishes shutdown");
+                Sleep(1);
+            }
+        }
+
+        ~DiagnosticWriterScope()
+        {
+            if (releaseOnShutdown != nullptr) SetEvent(releaseOnShutdown);
+            g_diagnosticWriter.BeginShutdown();
+            while (!g_diagnosticWriter.FinishShutdown()) Sleep(1);
+        }
+    };
+
+    void TestDeferredZoomDiagnostics()
+    {
+        TemporaryToolkitConfig log;
+        DiagnosticWriterScope writer;
+        const std::wstring originalPath = g_statusLogPath;
+        g_statusLogPath = log.Path();
+        g_zoomLogEventCount = 0;
+        LogZoomStatus("deferred-test");
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        Check(GetFileAttributesExW(log.path, GetFileExInfoStandard, &attributes) &&
+            attributes.nFileSizeHigh == 0 && attributes.nFileSizeLow == 0,
+            "input diagnostic does not open or write a file");
+        AcquireSRWLockExclusive(&g_zoomLogLock);
+        LogZoomStatus("contended-test");
+        ReleaseSRWLockExclusive(&g_zoomLogLock);
+        Check(g_zoomLogEventCount == 1, "contended diagnostics return without blocking input");
+        for (int i = 0; i < 100; ++i) LogZoomStatus("overflow-test");
+        Check(g_zoomLogEventCount == g_zoomLogEvents.size(), "diagnostic backlog is bounded");
+        FlushZoomStatusLogs();
+        writer.Stop();
+        Check(g_zoomLogEventCount == 0 &&
+            GetFileAttributesExW(log.path, GetFileExInfoStandard, &attributes) && attributes.nFileSizeLow > 0,
+            "file writer drains queued diagnostics before completing shutdown");
+        g_statusLogPath = originalPath;
+    }
+
+    struct BlockedDiagnosticSink
+    {
+        HANDLE entered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        std::vector<diagnostics::Record> records;
+        DWORD threadId = 0;
+
+        BlockedDiagnosticSink()
+        {
+            Check(entered != nullptr && release != nullptr, "blocked diagnostic sink events");
+        }
+
+        ~BlockedDiagnosticSink()
+        {
+            CloseHandle(entered);
+            CloseHandle(release);
+        }
+
+        static void Write(const diagnostics::Record& record, void* context)
+        {
+            auto& self = *static_cast<BlockedDiagnosticSink*>(context);
+            self.threadId = GetCurrentThreadId();
+            self.records.push_back(record);
+            if (self.records.size() == 1)
+            {
+                SetEvent(self.entered);
+                WaitForSingleObject(self.release, INFINITE);
+            }
+        }
+    };
+
+    void TestBlockedDiagnosticWriter()
+    {
+        BlockedDiagnosticSink sink;
+        DiagnosticWriterScope writer(BlockedDiagnosticSink::Write, &sink, sink.release);
+        wchar_t path[] = L"snapshot.log";
+        char line[] = "original snapshot\r\n";
+        Check(g_diagnosticWriter.Submit(path, "block\r\n", 7) &&
+            WaitForSingleObject(sink.entered, 5000) == WAIT_OBJECT_0, "writer enters simulated slow I/O");
+        Check(g_diagnosticWriter.Submit(path, line, std::strlen(line)),
+            "producer returns while file writer is blocked");
+        path[0] = L'X';
+        line[0] = 'X';
+        for (size_t i = 1; i < diagnostics::Writer::kCapacity; ++i)
+            Check(g_diagnosticWriter.Submit(L"snapshot.log", "queued\r\n", 8), "fill bounded writer queue");
+        Check(!g_diagnosticWriter.Submit(L"snapshot.log", "overflow\r\n", 10),
+            "slow I/O cannot create an unbounded backlog or block the producer");
+        g_diagnosticWriter.BeginShutdown();
+        Check(!g_diagnosticWriter.FinishShutdown(), "blocked writer prevents module unload");
+        Check(!g_diagnosticWriter.Submit(L"snapshot.log", "late\r\n", 6), "shutdown rejects new records");
+        writer.Stop();
+        Check(sink.threadId != GetCurrentThreadId() && sink.records.size() == diagnostics::Writer::kCapacity + 1,
+            "all accepted records drain on the dedicated thread before shutdown completes");
+        Check(std::wcscmp(sink.records[1].path.data(), L"snapshot.log") == 0 &&
+            std::strcmp(sink.records[1].line.data(), "original snapshot\r\n") == 0,
+            "writer owns immutable path and text snapshots");
+    }
+
+    void TestPendingRestoreDiagnostics()
+    {
+        BlockedDiagnosticSink sink;
+        DiagnosticWriterScope writer(BlockedDiagnosticSink::Write, &sink, sink.release);
+        Check(g_diagnosticWriter.Submit(L"block.log", "block\r\n", 7) &&
+            WaitForSingleObject(sink.entered, 5000) == WAIT_OBJECT_0, "hold diagnostic writer");
+        const std::wstring originalPath = g_statusLogPath;
+        const FovScanResult originalResult = g_fovScan.result;
+        g_statusLogPath = L"pending-restore.log";
+        g_fovScan.result = FovScanResult::ReadFailure;
+        g_zoomLogEventCount = 0;
+        g_zoom.transitionActive = true;
+        g_zoomRestorePending = false;
+        LogZoomStatus("pending-restore-test");
+        UpdateZoomDiagnostics();
+        Check(g_zoomLogEventCount == 1, "advancing transition still defers diagnostic formatting");
+        g_zoomRestorePending = true;
+        UpdateZoomDiagnostics();
+        Check(g_zoomLogEventCount == 0, "blocked restoration submits diagnostics despite transitionActive");
+        // Mutate the owner state while its accepted snapshot awaits the sink.
+        g_statusLogPath = L"changed.log";
+        g_fovScan.result = FovScanResult::Unique;
+        writer.Stop();
+        Check(sink.records.size() == 2 &&
+            std::wcscmp(sink.records[1].path.data(), L"pending-restore.log") == 0 &&
+            std::strstr(sink.records[1].line.data(), "event=pending-restore-test result=7 ") != nullptr,
+            "pending restoration diagnostics retain the captured worker state");
+        g_statusLogPath = originalPath;
+        g_fovScan.result = originalResult;
+        g_zoom.transitionActive = false;
+        g_zoomRestorePending = false;
+    }
+
+    struct MessageThread
+    {
+        HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE thread = nullptr;
+        HWND window = nullptr;
+        DWORD id = 0;
+
+        static DWORD WINAPI Run(void* context)
+        {
+            auto& self = *static_cast<MessageThread*>(context);
+            self.window = CreateWindowExW(0, L"STATIC", L"Input hook test", 0,
+                0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
+            SetEvent(self.ready);
+            MSG message{};
+            while (GetMessageW(&message, nullptr, 0, 0) > 0)
+                DispatchMessageW(&message);
+            if (self.window != nullptr) DestroyWindow(self.window);
+            return 0;
+        }
+
+        MessageThread()
+        {
+            Check(ready != nullptr, "message thread event");
+            thread = CreateThread(nullptr, 0, Run, this, 0, &id);
+            Check(thread != nullptr && WaitForSingleObject(ready, 5000) == WAIT_OBJECT_0 && window != nullptr,
+                "synthetic window and message thread start");
+        }
+
+        ~MessageThread()
+        {
+            PostThreadMessageW(id, WM_QUIT, 0, 0);
+            WaitForSingleObject(thread, 5000);
+            CloseHandle(thread);
+            CloseHandle(ready);
+        }
+    };
+
+    void TestMessageHookOwnership()
+    {
+        MessageThread first, replacement;
+        Check(InstallGameInputMessageHooks(first.window) == 1 && g_gameInputHooks.size() == 1 &&
+            g_gameInputHooks.front().threadId == first.id,
+            "message filtering hooks only the owning game window thread");
+        const HHOOK hook = g_gameInputHooks.front().handle;
+        Check(InstallGameInputMessageHooks(first.window) == 0 && g_gameInputHooks.front().handle == hook,
+            "repeated maintenance keeps the existing hook");
+        Check(InstallGameInputMessageHooks(nullptr) == 0 && g_gameInputHooks.front().handle == hook,
+            "missing window does not install hooks on unrelated threads");
+        Check(InstallGameInputMessageHooks(replacement.window) == 1 && g_gameInputHooks.size() == 1 &&
+            g_gameInputHooks.front().threadId == replacement.id,
+            "window owner replacement retires the old hook");
+        UnhookWindowsHookEx(g_gameInputHooks.front().handle);
+        g_gameInputHooks.clear();
+    }
+
+    void TestWorkerWaitMessages()
+    {
+        // A queued message must interrupt both normal and fallback waits;
+        // otherwise the low-level keyboard hook waits for the timer.
+        MSG message{};
+        PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+        HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+        Check(timer != nullptr, "high-resolution worker timer");
+        for (HANDLE waitTimer : {timer, static_cast<HANDLE>(nullptr)})
+        {
+            Check(PostThreadMessageW(GetCurrentThreadId(), WM_APP, 0, 0) != FALSE, "queue worker message");
+            const double started = ZoomTimeMs();
+            WaitForWorkerInput(waitTimer, 2000);
+            Check(ZoomTimeMs() - started < 1000.0 &&
+                PeekMessageW(&message, nullptr, WM_APP, WM_APP, PM_REMOVE),
+                "worker wait wakes for input before its deadline");
+        }
+        CancelWaitableTimer(timer);
+        CloseHandle(timer);
+    }
+
     struct Fixture
     {
         unsigned char* memory = static_cast<unsigned char*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
@@ -170,12 +395,12 @@ namespace
         g_zoom.displayedValue = 50.0f;
         g_zoom.transitionStartValue = 70.0f;
         g_zoom.transitionTargetValue = 45.0f;
-        g_zoom.transitionStartedAt = GetTickCount64() - 25;
+        g_zoom.transitionStartedAt = ZoomTimeMs() - 25;
         g_zoom.transitionActive = true;
         g_zoomConfig.transitionDurationMs = 100;
         g_zoomRestorePending = false;
 
-        Check(ScheduleZoomWheelTransition(g_zoom, 1, GetTickCount64()),
+        Check(ScheduleZoomWheelTransition(g_zoom, 1, ZoomTimeMs()),
             "wheel step schedules a new transition");
         Check(g_zoom.displayedValue == 50.0f && fixture.Value() == 50.0f,
             "wheel step leaves the displayed FOV unchanged immediately");
@@ -183,12 +408,12 @@ namespace
             g_zoom.transitionStartValue == 50.0f,
             "wheel step retargets the active transition from the displayed FOV");
 
-        g_zoom.transitionStartedAt = GetTickCount64() - 50;
+        g_zoom.transitionStartedAt = ZoomTimeMs() - 50;
         AdvanceZoomTransition();
         Check(fixture.Value() > 40.0f && fixture.Value() < 50.0f,
             "retargeted transition advances toward its new target");
 
-        g_zoom.transitionStartedAt = GetTickCount64() - g_zoomConfig.transitionDurationMs;
+        g_zoom.transitionStartedAt = ZoomTimeMs() - g_zoomConfig.transitionDurationMs;
         AdvanceZoomTransition();
         Check(fixture.Value() == 40.0f && g_zoom.currentZoomValue == 40.0f &&
             !g_zoom.transitionActive,
@@ -196,6 +421,55 @@ namespace
         g_zoom = {};
         g_zoomConfig.transitionDurationMs = originalDuration;
         g_zoomRestorePending = false;
+    }
+
+    void TestZoomTransitionTiming()
+    {
+        Fixture fixture;
+        const ULONGLONG originalDuration = g_zoomConfig.transitionDurationMs;
+        g_zoomConfig.transitionDurationMs = 180;
+        g_zoom = {};
+        g_zoom.target = fixture.target;
+        g_zoom.active = true;
+        g_zoom.displayedValue = 70.0f;
+        g_zoom.transitionStartValue = 70.0f;
+        g_zoom.transitionTargetValue = 15.0f;
+        g_zoom.transitionStartedAt = 1000.0;
+        g_zoom.transitionActive = true;
+        g_zoomRestorePending = false;
+        AdvanceZoomTransition(1000.5);
+        const float first = fixture.Value();
+        AdvanceZoomTransition(1001.0);
+        Check(first < 70.0f && fixture.Value() < first,
+            "sub-millisecond samples advance instead of sharing a coarse clock tick");
+        AdvanceZoomTransition(1090.0);
+        Check(std::fabs(fixture.Value() - 42.5f) < .001f,
+            "delayed worker updates preserve elapsed-time easing");
+        AdvanceZoomTransition(1180.0);
+        Check(fixture.Value() == 15.0f && !g_zoom.transitionActive,
+            "transition finishes exactly at its configured duration after skipped updates");
+
+        fixture.Value(15.0f);
+        g_zoom.displayedValue = 15.0f;
+        g_zoom.transitionStartValue = 15.0f;
+        g_zoom.transitionTargetValue = 15.0005f;
+        g_zoom.transitionStartedAt = 2000.0;
+        g_zoom.transitionActive = true;
+        AdvanceZoomTransition(2180.0);
+        Check(fixture.Value() == g_zoom.displayedValue && fixture.Value() == 15.0005f,
+            "small final steps still commit the exact target used by future CAS writes");
+
+        fixture.Value(65.0f);
+        g_zoom.displayedValue = 15.0005f;
+        g_zoom.transitionStartValue = 15.0005f;
+        g_zoom.transitionTargetValue = 20.0f;
+        g_zoom.transitionActive = true;
+        AdvanceZoomTransition(2090.0);
+        Check(fixture.Value() == 65.0f && g_zoomRestorePending,
+            "transition still preserves a setting changed by another writer");
+        g_zoom = {};
+        g_zoomRestorePending = false;
+        g_zoomConfig.transitionDurationMs = originalDuration;
     }
 
     void CompleteScan()
@@ -222,6 +496,12 @@ int main()
         TestToolkitConfig();
         TestScreenInput();
         TestZoomTransitionInterpolation();
+        TestDeferredZoomDiagnostics();
+        TestBlockedDiagnosticWriter();
+        TestPendingRestoreDiagnostics();
+        TestZoomTransitionTiming();
+        TestMessageHookOwnership();
+        TestWorkerWaitMessages();
         TestOverlayVisibilityPositionFlags();
         TestZoomWheelTransitionRetargeting();
         {

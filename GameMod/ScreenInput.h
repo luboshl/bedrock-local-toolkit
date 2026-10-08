@@ -36,15 +36,22 @@ namespace screens
         return profileValid && Read(object, vtable) && vtable == moduleBase + rva;
     }
 
-    template<size_t N> bool Code(uintptr_t base, uintptr_t rva, const unsigned char (&expected)[N])
+    template<typename T, size_t N> bool ImageBytes(uintptr_t base, uintptr_t rva,
+        const T (&expected)[N], DWORD protection)
     {
+        static_assert(sizeof(T) == 1);
         MEMORY_BASIC_INFORMATION memory{};
         std::array<unsigned char, N> actual{};
         return rva < fov::kImageSize && N <= fov::kImageSize - rva &&
             VirtualQuery(reinterpret_cast<const void*>(base + rva), &memory, sizeof(memory)) &&
-            memory.State == MEM_COMMIT && memory.Type == MEM_IMAGE && memory.Protect == PAGE_EXECUTE_READ &&
+            memory.State == MEM_COMMIT && memory.Type == MEM_IMAGE && memory.Protect == protection &&
             reinterpret_cast<uintptr_t>(memory.AllocationBase) == base &&
             Read(base + rva, actual) && std::memcmp(actual.data(), expected, N) == 0;
+    }
+
+    template<size_t N> bool Code(uintptr_t base, uintptr_t rva, const unsigned char (&expected)[N])
+    {
+        return ImageBytes(base, rva, expected, PAGE_EXECUTE_READ);
     }
 
     inline bool Slot(uintptr_t base, uintptr_t table, size_t offset, uintptr_t method)
@@ -65,7 +72,12 @@ namespace screens
         profileValid = supported && base &&
             Code(base, kClientStackRva, kClientStackBytes) && Code(base, kGameStackRva, kGameStackBytes) &&
             Code(base, kTopSceneRva, kTopSceneBytes) && Code(base, kSceneNameRva, kSceneNameBytes) &&
-            Code(base, kPassthroughRva, kPassthroughBytes) &&
+            Code(base, kTransitionRva, kTransitionBytes) &&
+            Code(base, kBeginTransitionRva, kBeginTransitionBytes) &&
+            Code(base, kBackgroundConstructorRva, kBackgroundConstructorBytes) &&
+            Code(base, kBackgroundNameRva, kBackgroundNameBytes) &&
+            Code(base, kFalseRva, kFalseBytes) &&
+            ImageBytes(base, kBackgroundNameStringRva, kBackgroundName, PAGE_READONLY) &&
             Code(base, kStackConstructorRva, kStackConstructorBytes) &&
             Code(base, kClientConstructorRva, kClientConstructorBytes) &&
             Code(base, kClientGameRva, kClientGameBytes) &&
@@ -73,7 +85,11 @@ namespace screens
             Slot(base, kGameVtableRva, 0x3C8, kGameStackRva) &&
             Slot(base, kStackVtableRva, 0x1A8, kTopSceneRva) &&
             Slot(base, kSceneVtableRva, 0x1D0, kSceneNameRva) &&
-            Slot(base, kSceneVtableRva, 0x280, kPassthroughRva);
+            Slot(base, kSceneVtableRva, 0x280, kTransitionRva) &&
+            Slot(base, kBackgroundVtableRva, 0x1B8, kBackgroundNameRva) &&
+            Slot(base, kBackgroundVtableRva, 0x118, kFalseRva) &&
+            Slot(base, kBackgroundVtableRva, 0x228, kFalseRva) &&
+            Slot(base, kBackgroundVtableRva, 0x280, kFalseRva);
         return profileValid;
     }
 
@@ -125,7 +141,8 @@ namespace screens
     {
         uintptr_t scene = 0, view = 0, tree = 0, root = 0;
         Name name{};
-        unsigned char passthrough = 0;
+        unsigned char transitioning = 0;
+        bool background = false;
         std::array<char, 64> text{};
     };
 
@@ -133,10 +150,16 @@ namespace screens
     {
         state = {};
         state.scene = address;
+        if (Type(address, kBackgroundVtableRva))
+        {
+            // This native scene has a fixed profiled name, not a ScreenView.
+            state.background = true;
+            return true;
+        }
         if (!Type(address, kSceneVtableRva) || !Read(address + kSceneViewOffset, state.view) ||
             !Read(state.view + kViewTreeOffset, state.tree) || !Read(state.tree + kTreeRootOffset, state.root) ||
             !state.view || !state.tree || !state.root ||
-            !Read(state.view + kViewPassthroughOffset, state.passthrough) || state.passthrough > 1 ||
+            !Read(state.view + kViewTransitionOffset, state.transitioning) || state.transitioning > 1 ||
             !Read(state.root + kRootNameOffset, state.name) || state.name.size == 0 ||
             state.name.size >= state.text.size() || state.name.capacity < state.name.size) return false;
         if (state.name.capacity < 16)
@@ -159,8 +182,9 @@ namespace screens
         return name == "hud_screen" || name == "f1_screen" || name == "f3_screen" || name == "zoom_screen";
     }
 
-    // Reproduce the native top-scene walk, with bounded snapshots and a stricter
-    // policy: only the known non-interactive debug/toast layers may be skipped.
+    // Read the shortcut policy from bounded snapshots. The native top-scene
+    // getter skips transitioning scenes, not non-interactive input overlays.
+    // Only debug/toast overlays and the profiled shared bottom background are ignored.
     // Unknown scene types, pending stack changes and read errors deny shortcuts.
     inline bool StackAllows(uintptr_t address, bool allowEmpty)
     {
@@ -176,12 +200,14 @@ namespace screens
         {
             SceneState& state = states[observed++];
             if (!Scene(entries[i - 1].scene, state)) return false;
-            const std::string_view name(state.text.data(), state.name.size);
-            if (state.passthrough)
+            if (state.background)
             {
-                if (name != "debug_screen" && name != "toast_screen") return false;
-                continue;
+                allowed = allowEmpty && i == 1;
+                break;
             }
+            if (state.transitioning) return false;
+            const std::string_view name(state.text.data(), state.name.size);
+            if (name == "debug_screen" || name == "toast_screen") continue;
             allowed = Gameplay(name);
             break;
         }
@@ -193,7 +219,8 @@ namespace screens
         {
             SceneState current{};
             if (!Scene(states[i].scene, current) || current.view != states[i].view || current.tree != states[i].tree ||
-                current.root != states[i].root || current.passthrough != states[i].passthrough ||
+                current.root != states[i].root || current.transitioning != states[i].transitioning ||
+                current.background != states[i].background ||
                 std::memcmp(&current.name, &states[i].name, sizeof(Name)) != 0 || current.text != states[i].text)
                 return false;
         }

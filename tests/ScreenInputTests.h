@@ -43,15 +43,21 @@ namespace
 
         void SetStack(std::array<unsigned char, 0x90>& stack, bool populated)
         {
+            SetStack(stack, entries.data(), populated ? 1u : 0u, entries.size());
+        }
+
+        void SetStack(std::array<unsigned char, 0x90>& stack, screens::SceneEntry* data,
+            uint32_t count, size_t capacity)
+        {
             screens::StackHeader header{};
             header.vtable = screens::moduleBase + screens::kStackVtableRva;
             header.alive = reinterpret_cast<uintptr_t>(&alive);
             header.control = reinterpret_cast<uintptr_t>(&alive); // Never dereferenced by the reader.
-            header.begin = reinterpret_cast<uintptr_t>(entries.data());
-            header.end = header.begin + (populated ? sizeof(screens::SceneEntry) : 0);
-            header.capacity = header.begin + sizeof(entries);
+            header.begin = reinterpret_cast<uintptr_t>(data);
+            header.end = header.begin + count * sizeof(screens::SceneEntry);
+            header.capacity = header.begin + capacity * sizeof(screens::SceneEntry);
             Store(stack, 0, header);
-            Store(stack, 0x88, uint32_t{populated ? 1u : 0u});
+            Store(stack, 0x88, count);
         }
 
         ScreenFixture()
@@ -83,17 +89,90 @@ namespace
         }
     };
 
+    void TestNativeScreenStacks()
+    {
+        ScreenFixture fixture, crosshair, debug, toast, menu;
+        crosshair.SetName("hud_crosshair_screen");
+        debug.SetName("debug_screen");
+        toast.SetName("toast_screen");
+        const uintptr_t background = screens::moduleBase + screens::kBackgroundVtableRva;
+        const uintptr_t opaque = 1; // Below the HUD; never used to authorize gameplay.
+        fixture.entries[0].scene = reinterpret_cast<uintptr_t>(&opaque);
+        fixture.entries[1].scene = reinterpret_cast<uintptr_t>(crosshair.scene.data());
+        fixture.entries[2].scene = reinterpret_cast<uintptr_t>(fixture.scene.data());
+        fixture.entries[3].scene = reinterpret_cast<uintptr_t>(menu.scene.data());
+        std::array<screens::SceneEntry, 4> shared{};
+        shared[0].scene = reinterpret_cast<uintptr_t>(&background);
+        shared[1].scene = reinterpret_cast<uintptr_t>(debug.scene.data());
+        shared[2].scene = reinterpret_cast<uintptr_t>(toast.scene.data());
+        shared[3].scene = reinterpret_cast<uintptr_t>(menu.scene.data());
+        fixture.SetStack(fixture.local, fixture.entries.data(), 3, 4);
+        fixture.SetStack(fixture.global, shared.data(), 3, 4);
+        screens::client.store(reinterpret_cast<uintptr_t>(fixture.client.data()));
+        Check(screens::AllowsShortcuts(),
+            "live gameplay topology: HUD/crosshair and shared cubemap/debug/toast with zero transition flags");
+
+        g_zoomConfig = {};
+        for (const int key : {int{'C'}, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10})
+        {
+            ObserveShortcut(key, false, screens::AllowsShortcuts());
+            ObserveShortcut(key, true, screens::AllowsShortcuts());
+            Check(!ShortcutNeedsRelease(key), "all module shortcuts accept a fresh press in the native HUD topology");
+        }
+        Check(ShouldHideZoomKeyFromGame(screens::AllowsShortcuts()), "native gameplay captures Zoom input");
+        for (const char* name : {"chat_screen", "pause_screen", "inventory_screen", "sign_screen",
+            "anvil_screen", "unknown_screen"})
+        {
+            menu.SetName(name);
+            fixture.SetStack(fixture.local, fixture.entries.data(), 4, 4);
+            const bool allowed = screens::AllowsShortcuts();
+            Check(!allowed, "live local menu above HUD denies all shortcuts");
+            ObserveShortcut('C', true, allowed);
+            Check(ShortcutNeedsRelease('C') && !ShouldHideZoomKeyFromGame(allowed),
+                "native chat topology passes its letter and latches the held Zoom shortcut");
+            fixture.SetStack(fixture.local, fixture.entries.data(), 3, 4);
+            Check(screens::AllowsShortcuts() && ShortcutNeedsRelease('C'),
+                "closing native chat requires a release before Zoom can resume");
+            ObserveShortcut('C', false, true);
+            fixture.SetStack(fixture.global, shared.data(), 4, 4);
+            Check(!screens::AllowsShortcuts(), "shared menu above native overlays denies gameplay shortcuts");
+            fixture.SetStack(fixture.global, shared.data(), 3, 4);
+        }
+        for (ScreenFixture* layer : {&fixture, &debug, &toast})
+        {
+            layer->view[screens::kViewTransitionOffset] = 1;
+            Check(!screens::AllowsShortcuts(), "transitioning HUD/debug/toast denies shortcuts");
+            layer->view[screens::kViewTransitionOffset] = 0;
+        }
+        menu.SetName("chat_screen");
+        menu.view[screens::kViewTransitionOffset] = 1;
+        fixture.SetStack(fixture.local, fixture.entries.data(), 4, 4);
+        Check(!screens::AllowsShortcuts(), "closing chat is never skipped to expose the HUD underneath");
+        fixture.SetStack(fixture.local, fixture.entries.data(), 3, 4);
+        shared[0].scene = reinterpret_cast<uintptr_t>(&opaque);
+        Check(!screens::AllowsShortcuts(), "unknown shared bottom scene cannot substitute for the native cubemap");
+        shared[0].scene = reinterpret_cast<uintptr_t>(&background);
+        shared[1].scene = reinterpret_cast<uintptr_t>(&background);
+        Check(!screens::AllowsShortcuts(), "cubemap above the shared bottom is refused");
+        shared[1].scene = reinterpret_cast<uintptr_t>(debug.scene.data());
+        fixture.entries[2].scene = reinterpret_cast<uintptr_t>(&background);
+        Check(!screens::AllowsShortcuts(), "cubemap cannot authorize a player stack");
+        fixture.SetStack(fixture.local, false);
+        Check(!screens::AllowsShortcuts(), "native shared overlays alone never establish gameplay");
+    }
+
     void TestScreenInput()
     {
+        TestNativeScreenStacks();
         Check(!screens::Initialize(0, false) && !screens::AllowsShortcuts(), "unverified screen profile denied");
         // Execute the exact profile byte and vtable checks against synthetic PE
         // memory. MEM_PRIVATE must never substitute for the original image.
         auto* privateCode = static_cast<unsigned char*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
         Check(privateCode != nullptr, "screen profile allocation");
-        std::memcpy(privateCode, screens::kPassthroughBytes, sizeof(screens::kPassthroughBytes));
+        std::memcpy(privateCode, screens::kTransitionBytes, sizeof(screens::kTransitionBytes));
         DWORD previous = 0;
         Check(VirtualProtect(privateCode, 4096, PAGE_EXECUTE_READ, &previous), "screen profile protection");
-        Check(!screens::Code(reinterpret_cast<uintptr_t>(privateCode), 0, screens::kPassthroughBytes),
+        Check(!screens::Code(reinterpret_cast<uintptr_t>(privateCode), 0, screens::kTransitionBytes),
             "matching private executable bytes cannot authorize a profile");
         VirtualFree(privateCode, 0, MEM_RELEASE);
 
@@ -171,14 +250,14 @@ namespace
             Check(!screens::AllowsShortcuts(), "shared game menu denies shortcuts above a local HUD");
             fixture.SetStack(fixture.global, false);
             menu.SetName("toast_screen");
-            menu.view[screens::kViewPassthroughOffset] = 1;
+            menu.view[screens::kViewTransitionOffset] = 0;
             fixture.entries[1].scene = reinterpret_cast<uintptr_t>(menu.scene.data());
             ScreenFixture::Store(fixture.local, 0x20,
                 reinterpret_cast<uintptr_t>(fixture.entries.data()) + 2 * sizeof(screens::SceneEntry));
             ScreenFixture::Store(fixture.local, 0x88, uint32_t{2});
             Check(screens::AllowsShortcuts(), "native non-interactive toast above HUD does not block gameplay");
             menu.SetName("chat_screen");
-            Check(!screens::AllowsShortcuts(), "unknown passthrough layer above HUD still denies shortcuts");
+            Check(!screens::AllowsShortcuts(), "unknown layer above HUD still denies shortcuts");
         }
         screens::profileValid = true;
         screens::client.store(reinterpret_cast<uintptr_t>(fixture.client.data()));
@@ -203,15 +282,15 @@ namespace
         ScreenFixture::Store(fixture.root, screens::kRootNameOffset, bad);
         Check(!screens::AllowsShortcuts(), "malformed name denies shortcuts");
         fixture.SetName("toast_screen");
-        fixture.view[screens::kViewPassthroughOffset] = 1;
+        fixture.view[screens::kViewTransitionOffset] = 0;
         Check(!screens::AllowsShortcuts(), "non-interactive layer alone cannot establish gameplay");
         Check(screens::StackAllows(reinterpret_cast<uintptr_t>(fixture.local.data()), true),
             "known non-interactive shared layer may be skipped");
         fixture.SetName("chat_screen");
         Check(!screens::StackAllows(reinterpret_cast<uintptr_t>(fixture.local.data()), true),
-            "passthrough flag never authorizes an unknown or text layer");
+            "non-gameplay names never authorize shortcuts");
         fixture.SetName("hud_screen");
-        fixture.view[screens::kViewPassthroughOffset] = 0;
+        fixture.view[screens::kViewTransitionOffset] = 0;
         fixture.SetStack(fixture.local, false);
         Check(!screens::AllowsShortcuts(), "empty player stack denies shortcuts");
         fixture.SetStack(fixture.local, true);
@@ -264,6 +343,6 @@ namespace
         complete(discovery);
         Check(discovery.state == screens::Discovery::State::Refused && !screens::AllowsShortcuts(),
             "missing client refuses shortcuts");
-        std::puts("Screen input tests passed: native allowlist, player/shared menus, Raw Input/GameInput passthrough, release latches, malformed state, unique/multiple/missing/timeout discovery.");
+        std::puts("Screen input tests passed: live HUD/background/debug/toast topology, native allowlist, player/shared menus and transitions, Raw Input/GameInput passthrough, release latches, malformed state, unique/multiple/missing/timeout discovery.");
     }
 }

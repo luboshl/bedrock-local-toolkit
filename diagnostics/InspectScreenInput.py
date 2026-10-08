@@ -37,10 +37,17 @@ def inspect_snapshot(directory):
                        "matches": read(base + rva, len(expected)) == expected})
     for table, slot, method in (("Client", 0x748, "ClientStack"), ("Game", 0x3C8, "GameStack"),
                                 ("Stack", 0x1A8, "TopScene"), ("Scene", 0x1D0, "SceneName"),
-                                ("Scene", 0x280, "Passthrough")):
+                                ("Scene", 0x280, "Transition"),
+                                ("Background", 0x1B8, "BackgroundName"),
+                                ("Background", 0x118, "False"),
+                                ("Background", 0x228, "False"),
+                                ("Background", 0x280, "False")):
         address = base + constants[f"k{table}VtableRva"] + slot
         checks.append({"context": f"{table} vtable + {slot:#x}",
                        "matches": struct.unpack("<Q", read(address, 8))[0] == base + constants[f"k{method}Rva"]})
+    expected_name = b"cubemap_background_screen\0"
+    checks.append({"context": "Background native name",
+                   "matches": read(base + constants["kBackgroundNameStringRva"], len(expected_name)) == expected_name})
     return {"source": "supported saved image; no live game verification", "checks": checks,
             "profileMatches": all(check["matches"] for check in checks)}
 

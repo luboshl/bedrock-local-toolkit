@@ -46,7 +46,30 @@ namespace
     constexpr float kMouseSensitivityPercentScale = 0.01f;
     constexpr ULONGLONG kDefaultZoomTransitionDurationMs = 180;
 
-    float InterpolateZoomFov(float startValue, float targetValue, ULONGLONG elapsedMs, ULONGLONG durationMs)
+    double ZoomTimeMs()
+    {
+        static const double ticksPerMs = []
+        {
+            LARGE_INTEGER frequency{};
+            QueryPerformanceFrequency(&frequency);
+            return static_cast<double>(frequency.QuadPart) / 1000.0;
+        }();
+        LARGE_INTEGER counter{};
+        QueryPerformanceCounter(&counter);
+        return static_cast<double>(counter.QuadPart) / ticksPerMs;
+    }
+
+    void WaitForWorkerInput(HANDLE timer, DWORD delayMs)
+    {
+        LARGE_INTEGER due{};
+        due.QuadPart = -static_cast<LONGLONG>(delayMs) * 10'000;
+        if (timer != nullptr && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE))
+            MsgWaitForMultipleObjectsEx(1, &timer, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        else
+            MsgWaitForMultipleObjectsEx(0, nullptr, delayMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+
+    float InterpolateZoomFov(float startValue, float targetValue, double elapsedMs, double durationMs)
     {
         if (durationMs == 0 || elapsedMs >= durationMs) return targetValue;
 
@@ -123,12 +146,12 @@ namespace
         float displayedValue = 0.0f;
         float transitionStartValue = 0.0f;
         float transitionTargetValue = 0.0f;
-        ULONGLONG transitionStartedAt = 0;
+        double transitionStartedAt = 0;
         bool transitionActive = false;
         bool restoring = false;
     };
 
-    bool ScheduleZoomWheelTransition(FovZoomState& zoom, LONG steps, ULONGLONG startedAt)
+    bool ScheduleZoomWheelTransition(FovZoomState& zoom, LONG steps, double startedAt)
     {
         const float requested = zoom.currentZoomValue - static_cast<float>(steps) * kZoomWheelStep;
         const float nextValue = (std::clamp)(requested, kZoomMinimumFov, kZoomMaximumFov);
@@ -178,7 +201,6 @@ namespace
     HWND g_trackedGameWindow = nullptr;
     HHOOK g_zoomKeyboardHook = nullptr;
     volatile LONG g_zoomKeyDown = 0;
-    volatile LONG g_zoomInputEpoch = 0;
     struct GameInputHook
     {
         DWORD threadId = 0;
@@ -222,19 +244,6 @@ namespace
     };
     static_assert(sizeof(GameInputMouseStateV2Compat) == 0x38);
     static_assert(offsetof(GameInputMouseStateV2Compat, wheelY) == 0x30);
-    struct MouseInputTrace
-    {
-        uintptr_t device = 0;
-        LONG epoch = 0;
-        bool capture = false;
-        LONG scaling = 0;
-        int64_t rawWheel = 0;
-        int64_t returnedWheel = 0;
-    };
-    SRWLOCK g_mouseInputTraceLock = SRWLOCK_INIT;
-    MouseInputTrace g_mouseInputTraces[64]{};
-    unsigned int g_mouseInputTraceCount = 0;
-    unsigned int g_mouseInputTraceLines = 0;
     struct MousePositionScaleState
     {
         bool initialized = false;
@@ -335,7 +344,7 @@ namespace
     {
         DWORD processId = 0;
         GetWindowThreadProcessId(window, &processId);
-        if (processId == GetCurrentProcessId() && IsWindowVisible(window))
+        if (processId == GetCurrentProcessId() && window != g_overlayWindow && IsWindowVisible(window))
         {
             *reinterpret_cast<HWND*>(result) = window;
             return FALSE;
@@ -540,7 +549,21 @@ namespace
         return true;
     }
 
+    // Input callbacks must never wait for disk or a diagnostic lock. Events
+    // have static lifetime; the worker formats and writes a bounded batch.
+    SRWLOCK g_zoomLogLock = SRWLOCK_INIT;
+    std::array<const char*, 64> g_zoomLogEvents{};
+    size_t g_zoomLogEventCount = 0;
+
     void LogZoomStatus(const char* event)
+    {
+        if (!TryAcquireSRWLockExclusive(&g_zoomLogLock)) return;
+        if (g_zoomLogEventCount < g_zoomLogEvents.size())
+            g_zoomLogEvents[g_zoomLogEventCount++] = event;
+        ReleaseSRWLockExclusive(&g_zoomLogLock);
+    }
+
+    void WriteZoomStatus(const char* event)
     {
         if (g_statusLogPath.empty()) return;
         char line[512]{};
@@ -560,6 +583,17 @@ namespace
             if (length > 0) WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
             CloseHandle(file);
         }
+    }
+
+    void FlushZoomStatusLogs()
+    {
+        std::array<const char*, 64> events{};
+        AcquireSRWLockExclusive(&g_zoomLogLock);
+        const size_t count = g_zoomLogEventCount;
+        std::copy_n(g_zoomLogEvents.begin(), count, events.begin());
+        g_zoomLogEventCount = 0;
+        ReleaseSRWLockExclusive(&g_zoomLogLock);
+        for (size_t i = 0; i < count; ++i) WriteZoomStatus(events[i]);
     }
 
     void LogNametagStatus(const char* event)
@@ -1264,7 +1298,7 @@ namespace
         g_zoom.displayedValue = values[2];
         g_zoom.transitionStartValue = values[2];
         g_zoom.transitionTargetValue = zoomFov;
-        g_zoom.transitionStartedAt = GetTickCount64();
+        g_zoom.transitionStartedAt = ZoomTimeMs();
         g_zoom.transitionActive = true;
         g_zoom.restoring = false;
         g_zoom.active = true;
@@ -1397,7 +1431,7 @@ namespace
             return;
         }
 
-        if (!ScheduleZoomWheelTransition(g_zoom, steps, GetTickCount64())) return;
+        if (!ScheduleZoomWheelTransition(g_zoom, steps, ZoomTimeMs())) return;
         float verify[5]{};
         if (!ReadVerifiedTarget(g_zoom.target.options, current, verify) ||
             !fov::SameTarget(current, g_zoom.target) ||
@@ -1796,90 +1830,17 @@ namespace
         return result;
     }
 
-    void TraceGameMouseInput(void* reading, uintptr_t caller,
-        const GameInputMouseStateV2Compat& raw, const GameInputMouseStateV2Compat& returned,
-        bool capture, LONG scaling)
-    {
-        // Read-only diagnostic for the pinned build's actual mouse consumer:
-        // GetCurrentReading(Mouse, device), GetMouseState at 0x8BDF8, then
-        // wheelY (+0x30) minus that device's saved wheelY at 0x8CD5F.
-        // The existing mute-boundary log covers only the first callback across
-        // all devices; a zero there says nothing about the other mice.
-        if (!g_supportedBuild || caller < g_gameModuleBase ||
-            caller - g_gameModuleBase != 0x8BDFE || g_statusLogPath.empty()) return;
-
-        using GetDeviceFunction = void(STDMETHODCALLTYPE*)(void*, IUnknown**);
-        auto** vtable = *reinterpret_cast<void***>(reading);
-        IUnknown* device = nullptr;
-        reinterpret_cast<GetDeviceFunction>(vtable[5])(reading, &device);
-        if (device == nullptr) return;
-        const uintptr_t identity = reinterpret_cast<uintptr_t>(device);
-        device->Release();
-
-        const LONG epoch = InterlockedCompareExchange(&g_zoomInputEpoch, 0, 0);
-        char line[768]{};
-        AcquireSRWLockExclusive(&g_mouseInputTraceLock);
-        unsigned int index = 0;
-        while (index < g_mouseInputTraceCount && g_mouseInputTraces[index].device != identity) ++index;
-        const bool first = index == g_mouseInputTraceCount;
-        if (first && g_mouseInputTraceCount == std::size(g_mouseInputTraces))
-        {
-            ReleaseSRWLockExclusive(&g_mouseInputTraceLock);
-            return;
-        }
-        MouseInputTrace& previous = g_mouseInputTraces[index];
-        const bool changed = first || previous.epoch != epoch || previous.capture != capture ||
-            previous.scaling != scaling || previous.rawWheel != raw.wheelY ||
-            previous.returnedWheel != returned.wheelY;
-        int length = 0;
-        if (changed && g_mouseInputTraceLines < 512)
-        {
-            ++g_mouseInputTraceLines;
-            length = sprintf_s(line,
-                "pid=%lu event=game-mouse-input elapsed_ms=%llu thread=%lu caller_rva=0x8BDFE "
-                "device=0x%llX epoch=%ld first=%u capture=%u scaling=%ld "
-                "raw_wheel=%lld returned_wheel=%lld previous_raw_wheel=%lld previous_returned_wheel=%lld "
-                "buttons=%u positions=%u raw_x=%lld raw_y=%lld returned_x=%lld returned_y=%lld\r\n",
-                GetCurrentProcessId(), GetTickCount64() - g_fovScan.startedAt, GetCurrentThreadId(),
-                static_cast<unsigned long long>(identity), epoch, first ? 1u : 0u, capture ? 1u : 0u, scaling,
-                static_cast<long long>(raw.wheelY), static_cast<long long>(returned.wheelY),
-                static_cast<long long>(previous.rawWheel), static_cast<long long>(previous.returnedWheel),
-                raw.buttons, raw.positions, static_cast<long long>(raw.positionX),
-                static_cast<long long>(raw.positionY), static_cast<long long>(returned.positionX),
-                static_cast<long long>(returned.positionY));
-        }
-        previous = { identity, epoch, capture, scaling, raw.wheelY, returned.wheelY };
-        if (first) ++g_mouseInputTraceCount;
-        if (length > 0)
-        {
-            const HANDLE file = CreateFileW(g_statusLogPath.c_str(), FILE_APPEND_DATA,
-                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (file != INVALID_HANDLE_VALUE)
-            {
-                DWORD written = 0;
-                WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
-                CloseHandle(file);
-            }
-        }
-        ReleaseSRWLockExclusive(&g_mouseInputTraceLock);
-    }
-
     bool STDMETHODCALLTYPE FilteredGameInputV2GetMouseState(void* reading, GameInputMouseStateV2Compat* state)
     {
-        const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
         if (g_originalGameInputV2GetMouseState == nullptr) return false;
         const bool result = g_originalGameInputV2GetMouseState(reading, state);
         if (result && state != nullptr)
         {
-            const GameInputMouseStateV2Compat raw = *state;
-            const bool capture = ShouldCaptureZoomWheel();
-            const LONG scaling = InterlockedCompareExchange(&g_zoomMouseScalingActive, 0, 0);
             // GameInput V2 positionX/Y must be relative-position readings;
             // absolute screen coordinates must remain untouched.
             if ((state->positions & 0x2u) != 0)
                 ScaleGameInputMouseMovement(reading, state->positionX, state->positionY);
             NoteGameInputMouseRead();
-            TraceGameMouseInput(reading, caller, raw, *state, capture, scaling);
         }
         return result;
     }
@@ -1911,7 +1872,15 @@ namespace
 
     uint32_t FilterZoomKey(GameInputKeyState* stateArray, uint32_t stateArrayCount, uint32_t validCount)
     {
-        return FilterZoomKey(stateArray, stateArrayCount, validCount, ModuleShortcutsAllowed(g_trackedGameWindow));
+        if (stateArray == nullptr) return validCount;
+        const uint32_t count = (std::min)(stateArrayCount, validCount);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            if (stateArray[i].virtualKey == static_cast<uint8_t>(g_zoomConfig.zoomKey))
+                return FilterZoomKey(stateArray, stateArrayCount, validCount,
+                    ModuleShortcutsAllowed(g_trackedGameWindow));
+        }
+        return validCount;
     }
 
     uint32_t STDMETHODCALLTYPE FilteredGameInputGetKeyState(IGameInputReading* reading,
@@ -1974,15 +1943,13 @@ namespace
     {
         if (g_originalGetKeyboardState == nullptr) return FALSE;
         const BOOL result = g_originalGetKeyboardState(state);
-        if (result && state != nullptr && ShouldHideZoomKeyFromGame())
+        if (result && state != nullptr && g_zoomConfig.zoomKey > 0 && g_zoomConfig.zoomKey <= 0xFF &&
+            (state[g_zoomConfig.zoomKey] & 0x80) != 0 && ShouldHideZoomKeyFromGame())
         {
-            if ((state[g_zoomConfig.zoomKey] & 0x80) != 0)
-            {
-                static volatile LONG logged = 0;
-                state[g_zoomConfig.zoomKey] = 0;
-                if (InterlockedCompareExchange(&logged, 1, 0) == 0)
-                    LogZoomStatus("getkeyboardstate-zoom-key-suppressed");
-            }
+            static volatile LONG logged = 0;
+            state[g_zoomConfig.zoomKey] = 0;
+            if (InterlockedCompareExchange(&logged, 1, 0) == 0)
+                LogZoomStatus("getkeyboardstate-zoom-key-suppressed");
         }
         return result;
     }
@@ -2342,6 +2309,9 @@ namespace
 
     unsigned int InstallRawInputApiHooks()
     {
+        // Inline API hooks also cover imports in modules loaded later. Once
+        // both are installed, repeated module snapshots add no coverage.
+        if (g_rawInputDataTarget != nullptr && g_rawInputBufferTarget != nullptr) return 0;
         HMODULE user32 = GetModuleHandleW(L"user32.dll");
         if (user32 == nullptr) return 0;
         void* rawInputData = reinterpret_cast<void*>(GetProcAddress(user32, "GetRawInputData"));
@@ -2392,6 +2362,8 @@ namespace
             }
         }
         if (inlineHookAdded) LogZoomStatus("raw-input-inline-hooked");
+        if (g_rawInputDataTarget != nullptr && g_rawInputBufferTarget != nullptr)
+            return inlineHookAdded ? 1u : 0u;
 
         HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
             GetCurrentProcessId());
@@ -2413,35 +2385,23 @@ namespace
 
     LRESULT CALLBACK GameInputMessageHookProc(int code, WPARAM removeFlag, LPARAM data);
 
-    unsigned int InstallGameInputMessageHooks()
+    unsigned int InstallGameInputMessageHooks(HWND gameWindow)
     {
-        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snapshot == INVALID_HANDLE_VALUE) return 0;
-
-        unsigned int installed = 0;
-        THREADENTRY32 entry{};
-        entry.dwSize = sizeof(entry);
-        if (Thread32First(snapshot, &entry))
+        // Window messages belong to the window's owning thread. Native and
+        // Raw Input hooks cover the other input interfaces independently.
+        DWORD processId = 0;
+        const DWORD threadId = GetWindowThreadProcessId(gameWindow, &processId);
+        if (!threadId || processId != GetCurrentProcessId() || threadId == GetCurrentThreadId()) return 0;
+        if (g_gameInputHooks.size() == 1 && g_gameInputHooks.front().threadId == threadId) return 0;
+        for (const GameInputHook& previous : g_gameInputHooks)
         {
-            do
-            {
-                if (entry.th32OwnerProcessID != GetCurrentProcessId() ||
-                    entry.th32ThreadID == GetCurrentThreadId()) continue;
-                const bool alreadyHooked = std::any_of(g_gameInputHooks.begin(), g_gameInputHooks.end(),
-                    [&entry](const GameInputHook& hook) { return hook.threadId == entry.th32ThreadID; });
-                if (alreadyHooked) continue;
-
-                HHOOK hook = SetWindowsHookExW(WH_GETMESSAGE, GameInputMessageHookProc,
-                    g_module, entry.th32ThreadID);
-                if (hook != nullptr)
-                {
-                    g_gameInputHooks.push_back({entry.th32ThreadID, hook});
-                    ++installed;
-                }
-            } while (Thread32Next(snapshot, &entry));
+            if (previous.handle != nullptr) UnhookWindowsHookEx(previous.handle);
         }
-        CloseHandle(snapshot);
-        return installed;
+        g_gameInputHooks.clear();
+        const HHOOK hook = SetWindowsHookExW(WH_GETMESSAGE, GameInputMessageHookProc, g_module, threadId);
+        if (hook == nullptr) return 0;
+        g_gameInputHooks.push_back({threadId, hook});
+        return 1;
     }
 
     bool FilterZoomWheelMessage(MSG& message, bool capture)
@@ -2475,10 +2435,10 @@ namespace
                 message->wParam == static_cast<WPARAM>(g_zoomConfig.zoomKey);
             const bool passZoomKeyUp = zoomKeyUp &&
                 AcknowledgeZoomKeyReleasePass(kZoomReleasePassMessage);
-            if (!passZoomKeyUp && ShouldHideZoomKeyFromGame() &&
+            if (!passZoomKeyUp &&
                 (message->message == WM_KEYDOWN || message->message == WM_KEYUP ||
                     message->message == WM_SYSKEYDOWN || message->message == WM_SYSKEYUP) &&
-                message->wParam == static_cast<WPARAM>(g_zoomConfig.zoomKey))
+                message->wParam == static_cast<WPARAM>(g_zoomConfig.zoomKey) && ShouldHideZoomKeyFromGame())
             {
                 static volatile LONG suppressedLogged = 0;
                 message->message = WM_NULL;
@@ -2524,7 +2484,6 @@ namespace
                 if (keyDown) stateChanged = InterlockedExchange(&g_zoomKeyDown, 1) == 0;
                 if (stateChanged && gameActive)
                 {
-                    InterlockedIncrement(&g_zoomInputEpoch);
                     LogZoomStatus(keyDown ? "zoom-key-down" : "zoom-key-up");
                 }
                 if ((keyDown || keyUp) && !(keyUp && neededRelease) && ShouldHideZoomKeyFromGame())
@@ -2543,21 +2502,20 @@ namespace
         if (!g_zoom.active || g_zoom.restoring || g_zoomRestorePending) return;
         g_zoom.transitionStartValue = g_zoom.displayedValue;
         g_zoom.transitionTargetValue = g_zoom.originalValue;
-        g_zoom.transitionStartedAt = GetTickCount64();
+        g_zoom.transitionStartedAt = ZoomTimeMs();
         g_zoom.transitionActive = true;
         g_zoom.restoring = true;
     }
 
-    void AdvanceZoomTransition()
+    void AdvanceZoomTransition(double now = ZoomTimeMs())
     {
         if (!g_zoom.active || !g_zoom.transitionActive || g_zoomRestorePending) return;
 
-        const ULONGLONG now = GetTickCount64();
         const float nextValue = InterpolateZoomFov(g_zoom.transitionStartValue,
             g_zoom.transitionTargetValue, now - g_zoom.transitionStartedAt,
-            g_zoomConfig.transitionDurationMs);
+            static_cast<double>(g_zoomConfig.transitionDurationMs));
         const bool complete = now - g_zoom.transitionStartedAt >= g_zoomConfig.transitionDurationMs;
-        if (std::fabs(nextValue - g_zoom.displayedValue) >= kFovMatchTolerance)
+        if (nextValue != g_zoom.displayedValue)
         {
             const uintptr_t valueAddress = g_zoom.target.pattern + sizeof(float) * 2;
             if (!CompareExchangeFov(valueAddress, g_zoom.displayedValue, nextValue))
@@ -2962,6 +2920,11 @@ namespace
         bool escapeWasDown = false;
         bool detachWasDown = false;
         bool zoomNeedsRelease = false;
+        HANDLE workerTimer = CreateWaitableTimerExW(nullptr, nullptr,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+        if (workerTimer == nullptr)
+            workerTimer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_MODIFY_STATE | SYNCHRONIZE);
+        ULONGLONG lastOverlayUpdateAt = 0;
         bool stopWhenRestored = false;
         bool shortcutsWereAllowed = false;
         screens::Discovery::State lastScreenDiscoveryState = screens::Discovery::State::Idle;
@@ -3005,7 +2968,7 @@ namespace
             const HWND gameWindow = GetGameWindow();
             g_trackedGameWindow = gameWindow;
             const ULONGLONG loopTime = GetTickCount64();
-            if (loopTime - lastRawApiHookScanAt >= 2'000)
+            if (!g_zoom.transitionActive && loopTime - lastRawApiHookScanAt >= 2'000)
             {
                 const unsigned int patched = InstallRawInputApiHooks();
                 if (patched > 0)
@@ -3023,13 +2986,13 @@ namespace
                 }
                 lastRawApiHookScanAt = loopTime;
             }
-            if (loopTime - lastGameInputHookScanAt >= 2'000)
+            if (!g_zoom.transitionActive && loopTime - lastGameInputHookScanAt >= 2'000)
             {
                 if (InstallGameInputApiHooks())
                 {
                     LogZoomStatus("gameinput-api-hooked");
                 }
-                const unsigned int installed = InstallGameInputMessageHooks();
+                const unsigned int installed = InstallGameInputMessageHooks(gameWindow);
                 if (installed > 0)
                 {
                     LogZoomStatus("game-input-message-hooks-installed");
@@ -3173,10 +3136,12 @@ namespace
                 }
                 detachWasDown = detachDown;
 
-                if (InterlockedCompareExchange(&g_indicatorVisible, 0, 0) != 0)
+                if (InterlockedCompareExchange(&g_indicatorVisible, 0, 0) != 0 &&
+                    loopTime - lastOverlayUpdateAt >= 100)
                 {
                     UpdateOverlayBounds(gameWindow);
                     InvalidateRect(g_overlayWindow, nullptr, FALSE);
+                    lastOverlayUpdateAt = loopTime;
                 }
             }
             else
@@ -3257,12 +3222,12 @@ namespace
                     if (g_screenDiscovery.state == screens::Discovery::State::Refused) LogZoomStatus("screen-discovery-refused");
                     lastScreenDiscoveryState = g_screenDiscovery.state;
                 }
-                if (GetTickCount64() - lastBrightLog >= 5'000 && InterlockedCompareExchange(&fullbright::enabled, 0, 0))
+                if (!g_zoom.transitionActive && GetTickCount64() - lastBrightLog >= 5'000 && InterlockedCompareExchange(&fullbright::enabled, 0, 0))
                 {
                     LogFullBrightStatus("runtime");
                     lastBrightLog = GetTickCount64();
                 }
-                if (GetTickCount64() - lastDayLog >= 5'000 && InterlockedCompareExchange(&alwaysday::enabled, 0, 0))
+                if (!g_zoom.transitionActive && GetTickCount64() - lastDayLog >= 5'000 && InterlockedCompareExchange(&alwaysday::enabled, 0, 0))
                 {
                     LogAlwaysDayStatus("runtime");
                     lastDayLog = GetTickCount64();
@@ -3271,7 +3236,8 @@ namespace
                 nametag::BindOptions(g_fovScan.result == FovScanResult::Unique ? g_fovScan.foundTarget.options : 0);
                 const LONG ready = InterlockedCompareExchange(&nametag::readiness, 0, 0);
                 const LONG64 checks = InterlockedCompareExchange64(&nametag::ownChecks, 0, 0);
-                if (ready != lastNametagReadiness || (checks != lastOwnChecks && GetTickCount64() - lastNametagLog >= 5'000))
+                if (!g_zoom.transitionActive && (ready != lastNametagReadiness ||
+                    (checks != lastOwnChecks && GetTickCount64() - lastNametagLog >= 5'000)))
                 {
                     LogNametagStatus("runtime");
                     lastNametagReadiness = ready;
@@ -3287,7 +3253,8 @@ namespace
                     ApplyZoom(gameWindow);
                 }
             }
-            Sleep(g_fovScan.result == FovScanResult::Running ||
+            if (!g_zoom.transitionActive) FlushZoomStatusLogs();
+            WaitForWorkerInput(workerTimer, g_fovScan.result == FovScanResult::Running ||
                 (g_zoom.transitionActive && !g_zoomRestorePending) ? 1 : 16);
         }
 
@@ -3326,6 +3293,9 @@ namespace
         InterlockedExchange64(&g_lastLegacyWheelAt, 0);
         ClearZoomWheelInput();
 
+        FlushZoomStatusLogs();
+        if (workerTimer != nullptr) CloseHandle(workerTimer);
+
         if (g_overlayWindow != nullptr)
         {
             DestroyWindow(g_overlayWindow);
@@ -3352,10 +3322,6 @@ extern "C" __declspec(dllexport) DWORD WINAPI StartGameMod(LPVOID)
     InterlockedExchange(&g_zoomMouseScaleBasisPoints, 10'000);
     InterlockedExchange(&g_nativeMouseCallbacks, 0);
     std::fill(std::begin(g_nativeMouseHookStates), std::end(g_nativeMouseHookStates), NativeMouseHookState{});
-    InterlockedExchange(&g_zoomInputEpoch, 0);
-    std::fill(std::begin(g_mouseInputTraces), std::end(g_mouseInputTraces), MouseInputTrace{});
-    g_mouseInputTraceCount = 0;
-    g_mouseInputTraceLines = 0;
     std::fill(std::begin(g_gameInputMousePositionScale), std::end(g_gameInputMousePositionScale),
         PerDeviceMousePositionScaleState{});
     g_zoom = {};

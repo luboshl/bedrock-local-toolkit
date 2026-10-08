@@ -77,6 +77,8 @@ From the repository root, run:
 
 This builds the C++ game module and C# launcher, then runs the isolated automated tests. Tests cover implementation details against synthetic memory; passing tests do not prove that behavior works in a live game. See [`SPECIFICATION.md`](SPECIFICATION.md) for the security requirements and verification boundaries.
 
+The gameplay/Zoom stutter fix uses precise animation timing, removes synchronous input diagnostics and repeated hook scans, and limits indicator redraws. Automated checks cover transition timing and deferred diagnostics; sprint-jumping, camera movement, and Zoom smoothness still require an in-game retest (issue #30).
+
 ## Publish a release
 
 Releases are built by GitHub Actions when a version tag is pushed. From a clean checkout of the changes intended for release, create and push a version tag:

@@ -211,6 +211,8 @@ namespace
     }
 }
 
+#include "ScreenInputTests.h"
+
 int main()
 {
     try
@@ -218,6 +220,7 @@ int main()
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
         TestToolkitConfig();
+        TestScreenInput();
         TestZoomTransitionInterpolation();
         TestOverlayVisibilityPositionFlags();
         TestZoomWheelTransitionRetargeting();

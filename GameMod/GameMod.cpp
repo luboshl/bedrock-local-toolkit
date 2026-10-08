@@ -27,6 +27,7 @@
 #include "AlwaysDay.h"
 #include "FullBright.h"
 #include "ScreenInput.h"
+#include "DiagnosticWriter.h"
 
 namespace
 {
@@ -550,7 +551,8 @@ namespace
     }
 
     // Input callbacks must never wait for disk or a diagnostic lock. Events
-    // have static lifetime; the worker formats and writes a bounded batch.
+    // have static lifetime; the worker formats snapshots for the file writer.
+    diagnostics::Writer g_diagnosticWriter;
     SRWLOCK g_zoomLogLock = SRWLOCK_INIT;
     std::array<const char*, 64> g_zoomLogEvents{};
     size_t g_zoomLogEventCount = 0;
@@ -575,14 +577,7 @@ namespace
             static_cast<unsigned long long>(g_fovScan.foundTarget.pattern),
             static_cast<unsigned long long>(g_fovScan.foundTarget.owner), screens::profileValid ? 1 : 0,
             static_cast<unsigned long long>(screens::client.load()));
-        const HANDLE file = CreateFileW(g_statusLogPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file != INVALID_HANDLE_VALUE)
-        {
-            DWORD written = 0;
-            if (length > 0) WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
-            CloseHandle(file);
-        }
+        if (length > 0) g_diagnosticWriter.Submit(g_statusLogPath.c_str(), line, static_cast<size_t>(length));
     }
 
     void FlushZoomStatusLogs()
@@ -594,6 +589,13 @@ namespace
         g_zoomLogEventCount = 0;
         ReleaseSRWLockExclusive(&g_zoomLogLock);
         for (size_t i = 0; i < count; ++i) WriteZoomStatus(events[i]);
+    }
+
+    void UpdateZoomDiagnostics()
+    {
+        // A failed CAS can leave transitionActive set while animation is
+        // blocked. Its restoration diagnostics must still be submitted.
+        if (!g_zoom.transitionActive || g_zoomRestorePending) FlushZoomStatusLogs();
     }
 
     void LogNametagStatus(const char* event)
@@ -609,14 +611,7 @@ namespace
             InterlockedCompareExchange64(&nametag::shownRear, 0, 0),
             InterlockedCompareExchange64(&nametag::shownFront, 0, 0),
             InterlockedCompareExchange64(&nametag::depthSelections, 0, 0));
-        const HANDLE file = CreateFileW(g_nametagLogPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file != INVALID_HANDLE_VALUE)
-        {
-            DWORD written = 0;
-            if (length > 0) WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
-            CloseHandle(file);
-        }
+        if (length > 0) g_diagnosticWriter.Submit(g_nametagLogPath.c_str(), line, static_cast<size_t>(length));
     }
 
     // Atomic value comparison prevents overwriting a setting changed between
@@ -767,9 +762,6 @@ namespace
     void LogAlwaysDayStatus(const char* event)
     {
         if (g_alwaysDayLogPath.empty()) return;
-        const HANDLE file = CreateFileW(g_alwaysDayLogPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file == INVALID_HANDLE_VALUE) return;
         for (size_t i = 0; i < alwaysday::kCallerCount; ++i)
         {
             char line[256]{};
@@ -782,34 +774,26 @@ namespace
                 alwaysday::kRenderCallers[i].returnRva == alwaysday::kSunriseReturnRva ? "sunrise-colour" :
                 alwaysday::kRenderCallers[i].returnRva == alwaysday::kSkyColourReturnRva ? "sky-colour" : "render-time",
                 static_cast<unsigned long long>(alwaysday::kRenderCallers[i].returnRva), alwaysday::OverrideCount(i));
-            DWORD written = 0;
-            if (length > 0) WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
+            if (length > 0) g_diagnosticWriter.Submit(g_alwaysDayLogPath.c_str(), line, static_cast<size_t>(length));
         }
         char line[256]{};
         const int length = sprintf_s(line,
             "pid=%lu event=%s status=%s profile=4 stars_overrides=%lld cloud_overrides=%lld celestial_overrides=%lld\r\n",
             GetCurrentProcessId(), event, alwaysday::status,
             alwaysday::StarsOverrideCount(), alwaysday::CloudOverrideCount(), alwaysday::CelestialOverrideCount());
-        DWORD written = 0;
-        if (length > 0) WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
-        CloseHandle(file);
+        if (length > 0) g_diagnosticWriter.Submit(g_alwaysDayLogPath.c_str(), line, static_cast<size_t>(length));
     }
 
     void LogFullBrightStatus(const char* event)
     {
         if (g_fullBrightLogPath.empty()) return;
-        const HANDLE file = CreateFileW(g_fullBrightLogPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file == INVALID_HANDLE_VALUE) return;
         char line[256]{};
         const int length = sprintf_s(line,
             "pid=%lu event=%s status=%s ready=%ld enabled=%ld profile=1 source=light-image brightness_overrides=%lld\r\n",
             GetCurrentProcessId(), event, fullbright::status,
             InterlockedCompareExchange(&fullbright::readiness, 0, 0),
             InterlockedCompareExchange(&fullbright::enabled, 0, 0), fullbright::OverrideCount());
-        DWORD written = 0;
-        if (length > 0) WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
-        CloseHandle(file);
+        if (length > 0) g_diagnosticWriter.Submit(g_fullBrightLogPath.c_str(), line, static_cast<size_t>(length));
     }
 
     bool LoadZoomConfigFromPath(const std::wstring& configPath)
@@ -2901,6 +2885,9 @@ namespace
             FreeLibraryAndExitThread(g_module, 0);
         }
 
+        // Diagnostics are optional; failed startup drops logs without falling
+        // back to synchronous writes on the keyboard-hook owner.
+        g_diagnosticWriter.Start();
         nametag::Initialize(g_gameModuleBase, g_supportedBuild);
         LogNametagStatus("initialize");
         alwaysday::Initialize(g_gameModuleBase, g_supportedBuild);
@@ -3222,12 +3209,14 @@ namespace
                     if (g_screenDiscovery.state == screens::Discovery::State::Refused) LogZoomStatus("screen-discovery-refused");
                     lastScreenDiscoveryState = g_screenDiscovery.state;
                 }
-                if (!g_zoom.transitionActive && GetTickCount64() - lastBrightLog >= 5'000 && InterlockedCompareExchange(&fullbright::enabled, 0, 0))
+                if ((!g_zoom.transitionActive || g_zoomRestorePending) &&
+                    GetTickCount64() - lastBrightLog >= 5'000 && InterlockedCompareExchange(&fullbright::enabled, 0, 0))
                 {
                     LogFullBrightStatus("runtime");
                     lastBrightLog = GetTickCount64();
                 }
-                if (!g_zoom.transitionActive && GetTickCount64() - lastDayLog >= 5'000 && InterlockedCompareExchange(&alwaysday::enabled, 0, 0))
+                if ((!g_zoom.transitionActive || g_zoomRestorePending) &&
+                    GetTickCount64() - lastDayLog >= 5'000 && InterlockedCompareExchange(&alwaysday::enabled, 0, 0))
                 {
                     LogAlwaysDayStatus("runtime");
                     lastDayLog = GetTickCount64();
@@ -3236,7 +3225,7 @@ namespace
                 nametag::BindOptions(g_fovScan.result == FovScanResult::Unique ? g_fovScan.foundTarget.options : 0);
                 const LONG ready = InterlockedCompareExchange(&nametag::readiness, 0, 0);
                 const LONG64 checks = InterlockedCompareExchange64(&nametag::ownChecks, 0, 0);
-                if (!g_zoom.transitionActive && (ready != lastNametagReadiness ||
+                if ((!g_zoom.transitionActive || g_zoomRestorePending) && (ready != lastNametagReadiness ||
                     (checks != lastOwnChecks && GetTickCount64() - lastNametagLog >= 5'000)))
                 {
                     LogNametagStatus("runtime");
@@ -3253,7 +3242,7 @@ namespace
                     ApplyZoom(gameWindow);
                 }
             }
-            if (!g_zoom.transitionActive) FlushZoomStatusLogs();
+            UpdateZoomDiagnostics();
             WaitForWorkerInput(workerTimer, g_fovScan.result == FovScanResult::Running ||
                 (g_zoom.transitionActive && !g_zoomRestorePending) ? 1 : 16);
         }
@@ -3272,6 +3261,7 @@ namespace
                 inputRestorePendingLogged = true;
             }
             SetOverlayMessage(L"Input hook restore pending; module remains loaded", RGB(255, 170, 110));
+            FlushZoomStatusLogs();
             MSG restoreMessage{};
             while (PeekMessageW(&restoreMessage, nullptr, 0, 0, PM_REMOVE))
             {
@@ -3294,6 +3284,18 @@ namespace
         ClearZoomWheelInput();
 
         FlushZoomStatusLogs();
+        g_diagnosticWriter.BeginShutdown();
+        while (!g_diagnosticWriter.FinishShutdown())
+        {
+            // Never unload while the writer still executes module code.
+            MSG diagnosticMessage{};
+            while (PeekMessageW(&diagnosticMessage, nullptr, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&diagnosticMessage);
+                DispatchMessageW(&diagnosticMessage);
+            }
+            WaitForWorkerInput(workerTimer, 16);
+        }
         if (workerTimer != nullptr) CloseHandle(workerTimer);
 
         if (g_overlayWindow != nullptr)

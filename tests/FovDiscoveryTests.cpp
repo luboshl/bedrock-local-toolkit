@@ -111,9 +111,41 @@ namespace
             "positioning a visible overlay keeps it shown");
     }
 
+    struct DiagnosticWriterScope
+    {
+        HANDLE releaseOnShutdown = nullptr;
+
+        DiagnosticWriterScope() { Check(g_diagnosticWriter.Start(), "diagnostic writer starts"); }
+        DiagnosticWriterScope(diagnostics::Writer::Sink sink, void* context, HANDLE release)
+            : releaseOnShutdown(release)
+        {
+            Check(g_diagnosticWriter.Start(sink, context), "test diagnostic writer starts");
+        }
+
+        void Stop()
+        {
+            if (releaseOnShutdown != nullptr) SetEvent(releaseOnShutdown);
+            g_diagnosticWriter.BeginShutdown();
+            const ULONGLONG deadline = GetTickCount64() + 5000;
+            while (!g_diagnosticWriter.FinishShutdown())
+            {
+                Check(GetTickCount64() < deadline, "diagnostic writer finishes shutdown");
+                Sleep(1);
+            }
+        }
+
+        ~DiagnosticWriterScope()
+        {
+            if (releaseOnShutdown != nullptr) SetEvent(releaseOnShutdown);
+            g_diagnosticWriter.BeginShutdown();
+            while (!g_diagnosticWriter.FinishShutdown()) Sleep(1);
+        }
+    };
+
     void TestDeferredZoomDiagnostics()
     {
         TemporaryToolkitConfig log;
+        DiagnosticWriterScope writer;
         const std::wstring originalPath = g_statusLogPath;
         g_statusLogPath = log.Path();
         g_zoomLogEventCount = 0;
@@ -129,10 +161,102 @@ namespace
         for (int i = 0; i < 100; ++i) LogZoomStatus("overflow-test");
         Check(g_zoomLogEventCount == g_zoomLogEvents.size(), "diagnostic backlog is bounded");
         FlushZoomStatusLogs();
+        writer.Stop();
         Check(g_zoomLogEventCount == 0 &&
             GetFileAttributesExW(log.path, GetFileExInfoStandard, &attributes) && attributes.nFileSizeLow > 0,
-            "worker drains queued diagnostics to disk");
+            "file writer drains queued diagnostics before completing shutdown");
         g_statusLogPath = originalPath;
+    }
+
+    struct BlockedDiagnosticSink
+    {
+        HANDLE entered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        std::vector<diagnostics::Record> records;
+        DWORD threadId = 0;
+
+        BlockedDiagnosticSink()
+        {
+            Check(entered != nullptr && release != nullptr, "blocked diagnostic sink events");
+        }
+
+        ~BlockedDiagnosticSink()
+        {
+            CloseHandle(entered);
+            CloseHandle(release);
+        }
+
+        static void Write(const diagnostics::Record& record, void* context)
+        {
+            auto& self = *static_cast<BlockedDiagnosticSink*>(context);
+            self.threadId = GetCurrentThreadId();
+            self.records.push_back(record);
+            if (self.records.size() == 1)
+            {
+                SetEvent(self.entered);
+                WaitForSingleObject(self.release, INFINITE);
+            }
+        }
+    };
+
+    void TestBlockedDiagnosticWriter()
+    {
+        BlockedDiagnosticSink sink;
+        DiagnosticWriterScope writer(BlockedDiagnosticSink::Write, &sink, sink.release);
+        wchar_t path[] = L"snapshot.log";
+        char line[] = "original snapshot\r\n";
+        Check(g_diagnosticWriter.Submit(path, "block\r\n", 7) &&
+            WaitForSingleObject(sink.entered, 5000) == WAIT_OBJECT_0, "writer enters simulated slow I/O");
+        Check(g_diagnosticWriter.Submit(path, line, std::strlen(line)),
+            "producer returns while file writer is blocked");
+        path[0] = L'X';
+        line[0] = 'X';
+        for (size_t i = 1; i < diagnostics::Writer::kCapacity; ++i)
+            Check(g_diagnosticWriter.Submit(L"snapshot.log", "queued\r\n", 8), "fill bounded writer queue");
+        Check(!g_diagnosticWriter.Submit(L"snapshot.log", "overflow\r\n", 10),
+            "slow I/O cannot create an unbounded backlog or block the producer");
+        g_diagnosticWriter.BeginShutdown();
+        Check(!g_diagnosticWriter.FinishShutdown(), "blocked writer prevents module unload");
+        Check(!g_diagnosticWriter.Submit(L"snapshot.log", "late\r\n", 6), "shutdown rejects new records");
+        writer.Stop();
+        Check(sink.threadId != GetCurrentThreadId() && sink.records.size() == diagnostics::Writer::kCapacity + 1,
+            "all accepted records drain on the dedicated thread before shutdown completes");
+        Check(std::wcscmp(sink.records[1].path.data(), L"snapshot.log") == 0 &&
+            std::strcmp(sink.records[1].line.data(), "original snapshot\r\n") == 0,
+            "writer owns immutable path and text snapshots");
+    }
+
+    void TestPendingRestoreDiagnostics()
+    {
+        BlockedDiagnosticSink sink;
+        DiagnosticWriterScope writer(BlockedDiagnosticSink::Write, &sink, sink.release);
+        Check(g_diagnosticWriter.Submit(L"block.log", "block\r\n", 7) &&
+            WaitForSingleObject(sink.entered, 5000) == WAIT_OBJECT_0, "hold diagnostic writer");
+        const std::wstring originalPath = g_statusLogPath;
+        const FovScanResult originalResult = g_fovScan.result;
+        g_statusLogPath = L"pending-restore.log";
+        g_fovScan.result = FovScanResult::ReadFailure;
+        g_zoomLogEventCount = 0;
+        g_zoom.transitionActive = true;
+        g_zoomRestorePending = false;
+        LogZoomStatus("pending-restore-test");
+        UpdateZoomDiagnostics();
+        Check(g_zoomLogEventCount == 1, "advancing transition still defers diagnostic formatting");
+        g_zoomRestorePending = true;
+        UpdateZoomDiagnostics();
+        Check(g_zoomLogEventCount == 0, "blocked restoration submits diagnostics despite transitionActive");
+        // Mutate the owner state while its accepted snapshot awaits the sink.
+        g_statusLogPath = L"changed.log";
+        g_fovScan.result = FovScanResult::Unique;
+        writer.Stop();
+        Check(sink.records.size() == 2 &&
+            std::wcscmp(sink.records[1].path.data(), L"pending-restore.log") == 0 &&
+            std::strstr(sink.records[1].line.data(), "event=pending-restore-test result=7 ") != nullptr,
+            "pending restoration diagnostics retain the captured worker state");
+        g_statusLogPath = originalPath;
+        g_fovScan.result = originalResult;
+        g_zoom.transitionActive = false;
+        g_zoomRestorePending = false;
     }
 
     struct MessageThread
@@ -373,6 +497,8 @@ int main()
         TestScreenInput();
         TestZoomTransitionInterpolation();
         TestDeferredZoomDiagnostics();
+        TestBlockedDiagnosticWriter();
+        TestPendingRestoreDiagnostics();
         TestZoomTransitionTiming();
         TestMessageHookOwnership();
         TestWorkerWaitMessages();

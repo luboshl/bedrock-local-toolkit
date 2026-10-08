@@ -304,6 +304,10 @@ namespace
     FovScanState g_fovScan;
     screens::Discovery g_screenDiscovery;
     volatile LONG g_shortcutNeedsRelease[256]{};
+    constexpr LONG kZoomReleasePassRawInput = 1;
+    constexpr LONG kZoomReleasePassMessage = 2;
+    constexpr LONG kZoomReleasePassAll = kZoomReleasePassRawInput | kZoomReleasePassMessage;
+    volatile LONG g_zoomReleasePassPending = 0;
     uintptr_t g_gameModuleBase = 0;
     bool g_supportedBuild = false;
     volatile LONG g_zoomReadiness = 0; // 0 starting, 1 searching, 2 ready, 3 refused
@@ -389,6 +393,19 @@ namespace
         if (key <= 0 || key >= 256) return;
         if (!down) InterlockedExchange(&g_shortcutNeedsRelease[key], 0);
         else if (!allowed) InterlockedExchange(&g_shortcutNeedsRelease[key], 1);
+    }
+
+    bool AcknowledgeZoomKeyReleasePass(LONG inputPath)
+    {
+        LONG pending = InterlockedCompareExchange(&g_zoomReleasePassPending, 0, 0);
+        while ((pending & inputPath) != 0)
+        {
+            const LONG remaining = pending & ~inputPath;
+            const LONG previous = InterlockedCompareExchange(&g_zoomReleasePassPending, remaining, pending);
+            if (previous == pending) return true;
+            pending = previous;
+        }
+        return false;
     }
 
     bool IsZoomKeyDown()
@@ -1449,11 +1466,13 @@ namespace
     void FilterRawInputZoomKey(RAWINPUT& input, bool shortcutsAllowed)
     {
         static volatile LONG suppressedLogged = 0;
-        if (input.header.dwType != RIM_TYPEKEYBOARD || !shortcutsAllowed ||
-            ShortcutNeedsRelease(g_zoomConfig.zoomKey)) return;
+        if (input.header.dwType != RIM_TYPEKEYBOARD) return;
 
         RAWKEYBOARD& keyboard = input.data.keyboard;
         if (keyboard.VKey != static_cast<USHORT>(g_zoomConfig.zoomKey)) return;
+        if ((keyboard.Flags & RI_KEY_BREAK) != 0 &&
+            AcknowledgeZoomKeyReleasePass(kZoomReleasePassRawInput)) return;
+        if (!shortcutsAllowed || ShortcutNeedsRelease(g_zoomConfig.zoomKey)) return;
         keyboard.MakeCode = 0;
         keyboard.Flags = RI_KEY_BREAK;
         keyboard.VKey = 0;
@@ -2452,7 +2471,11 @@ namespace
         if (code >= 0 && removeFlag == PM_REMOVE && data != 0)
         {
             auto* message = reinterpret_cast<MSG*>(data);
-            if (ShouldHideZoomKeyFromGame() &&
+            const bool zoomKeyUp = (message->message == WM_KEYUP || message->message == WM_SYSKEYUP) &&
+                message->wParam == static_cast<WPARAM>(g_zoomConfig.zoomKey);
+            const bool passZoomKeyUp = zoomKeyUp &&
+                AcknowledgeZoomKeyReleasePass(kZoomReleasePassMessage);
+            if (!passZoomKeyUp && ShouldHideZoomKeyFromGame() &&
                 (message->message == WM_KEYDOWN || message->message == WM_KEYUP ||
                     message->message == WM_SYSKEYDOWN || message->message == WM_SYSKEYUP) &&
                 message->wParam == static_cast<WPARAM>(g_zoomConfig.zoomKey))
@@ -2485,6 +2508,8 @@ namespace
             const bool keyDown = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
             const bool keyUp = message == WM_KEYUP || message == WM_SYSKEYUP;
             const bool neededRelease = ShortcutNeedsRelease(static_cast<int>(keyboard->vkCode));
+            if (keyboard->vkCode == static_cast<DWORD>(g_zoomConfig.zoomKey) && keyUp && neededRelease)
+                InterlockedExchange(&g_zoomReleasePassPending, kZoomReleasePassAll);
             for (const int key : {g_zoomConfig.zoomKey, g_zoomConfig.nametagKey, g_zoomConfig.alwaysDayKey,
                 g_zoomConfig.fullBrightKey, g_zoomConfig.indicatorKey, g_zoomConfig.exitKey})
             {
@@ -3343,6 +3368,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI StartGameMod(LPVOID)
     screens::client.store(0);
     screens::profileValid = false;
     for (auto& blocked : g_shortcutNeedsRelease) InterlockedExchange(&blocked, 0);
+    InterlockedExchange(&g_zoomReleasePassPending, 0);
     g_supportedBuild = false;
     g_gameModuleBase = 0;
     InterlockedExchange(&g_zoomReadiness, 0);

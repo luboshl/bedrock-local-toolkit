@@ -27,7 +27,8 @@ internal static class Program
 
     private sealed record ZoomConfig(float FirstPersonFov, float ThirdPersonFov,
         uint TransitionDurationMs, float MouseSensitivity,
-        string Zoom, string Nametag, string AlwaysDay, string FullBright, string StatusIndicator, string SafeDetach);
+        string Zoom, string Nametag, string AlwaysDay, string FullBright, string StatusIndicator, string SafeDetach,
+        bool ShowNametagWhenHudHidden);
 
     private static int Main()
     {
@@ -40,7 +41,8 @@ internal static class Program
             Console.WriteLine($"Configuration ({zoomConfigPath}): FOV first-person {zoomConfig.FirstPersonFov}, " +
                 $"third-person {zoomConfig.ThirdPersonFov}, transition {zoomConfig.TransitionDurationMs} ms, " +
                 $"sensitivity {zoomConfig.MouseSensitivity}; Zoom {zoomConfig.Zoom}, Nametag {zoomConfig.Nametag}, Always day {zoomConfig.AlwaysDay}, Full Bright {zoomConfig.FullBright}, " +
-                $"indicator {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}.");
+                $"indicator {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}; " +
+                $"show nametag when HUD hidden {zoomConfig.ShowNametagWhenHudHidden}.");
 
             var target = WaitForSupportedGame(TimeSpan.FromSeconds(90));
             Console.WriteLine($"Verified target: PID {target.ProcessId}, {target.PackageFullName}, x64.");
@@ -96,11 +98,12 @@ internal static class Program
 
     private static ZoomConfig LoadZoomConfig(string path)
     {
-        var defaults = new ZoomConfig(15f, 28f, 180, 12f, "C", "F7", "F6", "F8", "F9", "F10");
+        var defaults = new ZoomConfig(15f, 28f, 180, 12f, "C", "F7", "F6", "F8", "F9", "F10", true);
         if (!File.Exists(path)) return defaults;
 
         var zoomValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var shortcutValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var nametagValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         Dictionary<string, string>? sectionValues = null;
         foreach (var rawLine in File.ReadLines(path))
         {
@@ -110,7 +113,8 @@ internal static class Program
             {
                 var section = line[1..^1].Trim();
                 sectionValues = string.Equals(section, "Zoom", StringComparison.OrdinalIgnoreCase) ? zoomValues :
-                    string.Equals(section, "Shortcuts", StringComparison.OrdinalIgnoreCase) ? shortcutValues : null;
+                    string.Equals(section, "Shortcuts", StringComparison.OrdinalIgnoreCase) ? shortcutValues :
+                    string.Equals(section, "nametag", StringComparison.OrdinalIgnoreCase) ? nametagValues : null;
                 continue;
             }
             if (sectionValues is null) continue;
@@ -138,6 +142,13 @@ internal static class Program
             shortcutValues.TryGetValue(key, out var value) && IsSupportedKey(value) ? value.Trim().ToUpperInvariant() :
             shortcutValues.ContainsKey(key) ? throw new InvalidDataException($"Invalid key for {key}='{shortcutValues[key]}' in {path}.") : fallback;
 
+        bool ReadNametagHudSetting()
+        {
+            if (!nametagValues.TryGetValue("show_when_hud_hidden", out var text)) return defaults.ShowNametagWhenHudHidden;
+            if (bool.TryParse(text, out var value)) return value;
+            throw new InvalidDataException($"Invalid value for show_when_hud_hidden='{text}' in {path}; expected true or false.");
+        }
+
         var legacyFov = ReadFloat("Fov", defaults.FirstPersonFov, 1f, 120f);
         var config = new ZoomConfig(ReadFloat("FirstPersonFov", legacyFov, 1f, 120f),
             ReadFloat("ThirdPersonFov", zoomValues.ContainsKey("Fov") ? legacyFov : defaults.ThirdPersonFov, 1f, 120f),
@@ -145,7 +156,8 @@ internal static class Program
             ReadFloat("MouseSensitivity", defaults.MouseSensitivity, 0f, 100f),
             ReadKey("Zoom", defaults.Zoom), ReadKey("Nametag", defaults.Nametag),
             ReadKey("AlwaysDay", defaults.AlwaysDay), ReadKey("FullBright", defaults.FullBright),
-            ReadKey("StatusIndicator", defaults.StatusIndicator), ReadKey("SafeDetach", defaults.SafeDetach));
+            ReadKey("StatusIndicator", defaults.StatusIndicator), ReadKey("SafeDetach", defaults.SafeDetach),
+            ReadNametagHudSetting());
         var keys = new[] { config.Zoom, config.Nametag, config.AlwaysDay, config.FullBright, config.StatusIndicator, config.SafeDetach };
         if (keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != keys.Length)
             throw new InvalidDataException($"Keyboard shortcuts in {path} must be unique.");

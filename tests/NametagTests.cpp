@@ -11,6 +11,14 @@ extern "C" void OwnSkipTest();
 extern "C" void DepthContinueTest();
 extern "C" bool ClobberTrue();
 extern "C" bool ClobberFalse();
+extern "C" void InvokeHudBridge(void*, uintptr_t, uintptr_t, void*);
+extern "C" void InvokeLoopExitBridge(void*, uintptr_t, uintptr_t, void*);
+extern "C" void HudContinueTest();
+extern "C" void LoopContinueTest();
+extern "C" void OtherLabelsTest();
+extern "C" void HudCleanupTest();
+extern "C" void InvokeNamesMaskBridge(void*, uintptr_t, uintptr_t, void*);
+extern "C" void NamesMaskContinueTest();
 
 namespace
 {
@@ -49,9 +57,10 @@ namespace
         InvokeOwnBridge(invocation.code, invocation.actor, invocation.actor, &invocation.observation);
         return 0;
     }
-    void CheckRegisters(const Observation& value, void* stub, uintptr_t actor, uintptr_t localPlayer)
+    void CheckRegisters(const Observation& value, void* stub, uintptr_t actor, uintptr_t localPlayer, bool nativeCl = false, bool nativeEcx = false)
     {
-        Check(value.registers[1] == reinterpret_cast<uintptr_t>(stub), "RCX restored");
+        Check(nativeEcx || (value.registers[1] & (nativeCl ? ~uintptr_t{0xFF} : ~uintptr_t{0})) ==
+            (reinterpret_cast<uintptr_t>(stub) & (nativeCl ? ~uintptr_t{0xFF} : ~uintptr_t{0})), "RCX restored except native CL result");
         Check(value.registers[2] == actor && value.registers[3] == localPlayer, "RDX and R8 restored");
         Check(value.registers[4] == reinterpret_cast<uintptr_t>(&value), "R9 restored");
         Check(value.registers[5] == 0x2233445566778899 && value.registers[6] == 0x33445566778899AA, "R10 and R11 restored");
@@ -83,7 +92,7 @@ int main()
         Check(Perspective(options.Address()) == 0, "first-person option identity");
         bridge = options.memory;
         data = reinterpret_cast<BridgeData*>(options.memory + kDataOffset);
-        patches[0].installed = patches[1].installed = true;
+        for (auto& patch : patches) patch.installed = true;
         readiness = 1;
         enableByDefaultPending = 1;
         BindOptions(options.Address());
@@ -102,10 +111,26 @@ int main()
         for (int perspective : {1, 2})
         {
             std::memcpy(options.memory + 536, &perspective, 4);
+            Check(HudSuppression(0x1000, 1) == 0 && SkipOtherHudLabels(), "allow local name but keep other HUD labels hidden");
+            Check(NamesHudMask(1) == 1 && NamesHudMask(0) == 1 && NamesHudMask(2) == 3,
+                "names metadata bypasses only canonical hidden-HUD value in both cameras");
             Check(ShouldInclude(0x1000, 0x1000), "own name included in BOTH third-person perspectives");
+            Check(!ShouldInclude(0x2000, 0x1000), "HUD-hidden override does not reveal other actors");
             Check(UseDepth(0x1000) && !UseDepth(0x2000), "depth test applies only to current native local player");
         }
+        showWhenHudHidden = 0;
+        Check(NamesHudMask(1) == 0, "disabled setting retains native names metadata mask");
+        Check(HudSuppression(0x1000, 1) == 1, "disabled setting retains native hidden-HUD gate");
+        showWhenHudHidden = 1;
+        Check(HudSuppression(0, 1) == 1 && HudSuppression(0, 0) == 1,
+            "missing local player never bypasses suppression");
+        Check(HudSuppression(0x1000, 2) == 2, "unexpected native hidden value cannot bypass suppression");
+        Check(HudSuppression(0x1000, 0) == 0 && !SkipOtherHudLabels() && ShouldInclude(0x2000, 0x1000),
+            "visible HUD restores other actors and labels in the next frame");
         enabled = 0;
+        Check(NamesHudMask(1) == 0, "F7 disable retains native names metadata mask");
+        Check(HudSuppression(0x1000, 1) == 1, "F7 disable retains native suppression");
+        HudSuppression(0x1000, 0);
         Check(!ShouldInclude(0x1000, 0x1000) && ShouldInclude(0x2000, 0x1000), "toggle leaves other actors alone");
         Check(UseDepth(0x1000), "occlusion survives toggle between inclusion and preparation");
         enabled = 1;
@@ -117,6 +142,11 @@ int main()
         options.Pointer(1024 + fov::kKeyOffset + 16, 16);
         int invalid = 3; std::memcpy(options.memory + 536, &invalid, 4);
         Check(!ShouldInclude(0x1000, 0x1000), "unknown perspective refused");
+        Check(HudSuppression(0x1000, 1) == 1, "unknown perspective cannot bypass native HUD gate");
+        Check(NamesHudMask(1) == 0, "invalid camera cannot bypass names metadata mask");
+        int firstPerson = 0; std::memcpy(options.memory + 536, &firstPerson, 4);
+        Check(HudSuppression(0x1000, 1) == 1, "first person retains native HUD-hidden suppression");
+        Check(NamesHudMask(1) == 0, "first person retains names metadata mask");
         DWORD old = 0;
         VirtualProtect(options.memory + 4096, 4096, PAGE_NOACCESS, &old);
         Check(Perspective(options.Address(4096)) == -1, "unreadable options refused");
@@ -128,6 +158,11 @@ int main()
         state->ownContinue = reinterpret_cast<uintptr_t>(&OwnContinueTest);
         state->ownSkip = reinterpret_cast<uintptr_t>(&OwnSkipTest);
         state->depthContinue = reinterpret_cast<uintptr_t>(&DepthContinueTest);
+        state->hudContinue = reinterpret_cast<uintptr_t>(&HudContinueTest);
+        state->loopContinue = reinterpret_cast<uintptr_t>(&LoopContinueTest);
+        state->otherLabels = reinterpret_cast<uintptr_t>(&OtherLabelsTest);
+        state->hudCleanup = reinterpret_cast<uintptr_t>(&HudCleanupTest);
+        state->namesMaskContinue = reinterpret_cast<uintptr_t>(&NamesMaskContinueTest);
         state->ownCallback = reinterpret_cast<void*>(&ClobberTrue);
         state->depthCallback = reinterpret_cast<void*>(&ClobberTrue);
         BuildBridges(executable.memory, state);
@@ -164,16 +199,74 @@ int main()
             Check(state->active == 0, "depth callback drained");
         }
 
+        for (void* callback : std::array<void*, 3>{reinterpret_cast<void*>(&ClobberTrue), reinterpret_cast<void*>(&ClobberFalse), nullptr})
+        {
+            state->hudCallback = callback;
+            state->loopExitCallback = callback;
+            for (uintptr_t hidden : {uintptr_t{0}, uintptr_t{1}})
+            {
+                for (uintptr_t player : {uintptr_t{0}, actor})
+                {
+                    Observation hud{};
+                    InvokeHudBridge(executable.memory + 1024, hidden, player, &hud);
+                    const unsigned char expected = callback ? (callback == reinterpret_cast<void*>(&ClobberTrue) ? 1 : 0) :
+                        static_cast<unsigned char>((player ? 0 : 1) | hidden);
+                    Check(hud.selected == expected && ((hud.flags & 0x40) != 0) == (expected == 0),
+                        "HUD bridge supplies native CL and branch flags, including null callback");
+                    Check(hud.registers[0] == (uintptr_t{0x1122334455667700} | hidden), "HUD bridge preserves original AL and RAX");
+                    CheckRegisters(hud, executable.memory + 1024, hidden, player, true);
+                    Check(state->active == 0, "HUD callback drains");
+                }
+                Observation loop{};
+                InvokeLoopExitBridge(executable.memory + 1536, hidden, actor, &loop);
+                Check(loop.selected == (hidden ? 0 : callback == reinterpret_cast<void*>(&ClobberTrue) ? 2 : 1),
+                    "loop bridge preserves fallthrough/native labels and hides other labels only on loop exit");
+                Check(((loop.flags & 0x40) != 0) == (hidden == 0) && loop.registers[0] == 0x1122334455667788,
+                    "loop bridge preserves incoming flags and RAX");
+                CheckRegisters(loop, executable.memory + 1536, hidden, actor);
+                Check(state->active == 0, "loop callback drains");
+            }
+        }
+
         Allocation code;
+        for (void* callback : std::array<void*, 3>{reinterpret_cast<void*>(&ClobberTrue), reinterpret_cast<void*>(&ClobberFalse), nullptr})
+        {
+            state->namesMaskCallback = callback;
+            for (uintptr_t hidden : {uintptr_t{0}, uintptr_t{1}, uintptr_t{2}})
+                for (uint32_t allowed : {0u, 1u, 0x12340001u})
+                {
+                    Observation mask{};
+                    InvokeNamesMaskBridge(executable.memory + 2048, hidden, reinterpret_cast<uintptr_t>(&allowed), &mask);
+                    const unsigned char expectedMask = callback ? (callback == reinterpret_cast<void*>(&ClobberTrue) ? 1 : 0) :
+                        static_cast<unsigned char>(hidden ^ 1);
+                    const unsigned char result = static_cast<unsigned char>(allowed) & expectedMask;
+                    Check(mask.selected == result && mask.registers[1] == ((allowed & ~0xFFu) | result),
+                        "metadata bridge preserves native names preference and ECX load, including native denial");
+                    Check(mask.registers[0] == (uintptr_t{0x1122334455667700} | expectedMask), "metadata bridge changes only native AL result");
+                    Check(((mask.flags & 0x40) != 0) == (result == 0), "native metadata AND flags preserved");
+                    // The displaced native ECX load is checked above.
+                    CheckRegisters(mask, executable.memory + 2048, hidden, reinterpret_cast<uintptr_t>(&allowed), false, true);
+                    Check(state->active == 0, "metadata callback drains");
+                }
+        }
         std::memcpy(code.memory, kOwnOriginal, sizeof(kOwnOriginal));
         std::memcpy(code.memory + 32, kDepthOriginal, sizeof(kDepthOriginal));
+        std::memcpy(code.memory + 64, hudprofile::kGateOriginal, sizeof(hudprofile::kGateOriginal));
+        std::memcpy(code.memory + 96, hudprofile::kLoopExitOriginal, sizeof(hudprofile::kLoopExitOriginal));
+        std::memcpy(code.memory + 112, hudprofile::kNamesMaskOriginal, sizeof(hudprofile::kNamesMaskOriginal));
         Check(Jump(patches[0], code.Address(), kOwnOriginal, sizeof(kOwnOriginal), code.Address(128)), "relative own patch");
         Check(Jump(patches[1], code.Address(32), kDepthOriginal, sizeof(kDepthOriginal), code.Address(256)), "relative depth patch");
+        Check(Jump(patches[2], code.Address(64), hudprofile::kGateOriginal, sizeof(hudprofile::kGateOriginal), code.Address(384)), "relative HUD gate patch");
+        Check(Jump(patches[3], code.Address(96), hudprofile::kLoopExitOriginal, sizeof(hudprofile::kLoopExitOriginal), code.Address(512)), "relative loop exit patch");
+        Check(Jump(patches[4], code.Address(112), hudprofile::kNamesMaskOriginal, sizeof(hudprofile::kNamesMaskOriginal), code.Address(640)), "relative metadata mask patch");
         Check(!Jump(patches[0], code.Address(), kOwnOriginal, sizeof(kOwnOriginal), code.Address() + 0x80000006), "out-of-range jump refused");
         VirtualProtect(code.memory, 4096, PAGE_EXECUTE_READ, &old);
         Check(ChangePatches(true) && patches[0].installed && patches[1].installed, "actual coordinated native patch installation");
         Check(ChangePatches(false) && Matches(code.Address(), kOwnOriginal, sizeof(kOwnOriginal)) &&
-            Matches(code.Address(32), kDepthOriginal, sizeof(kDepthOriginal)), "actual restoration of BOTH sites");
+            Matches(code.Address(32), kDepthOriginal, sizeof(kDepthOriginal)) &&
+            Matches(code.Address(64), hudprofile::kGateOriginal, sizeof(hudprofile::kGateOriginal)) &&
+            Matches(code.Address(96), hudprofile::kLoopExitOriginal, sizeof(hudprofile::kLoopExitOriginal)) &&
+            Matches(code.Address(112), hudprofile::kNamesMaskOriginal, sizeof(hudprofile::kNamesMaskOriginal)), "actual restoration of all five sites");
         Check(ChangePatches(true), "reinstall for foreign-byte test");
         VirtualProtect(code.memory, 4096, PAGE_READWRITE, &old);
         code.memory[32] = 0xCC;
@@ -196,13 +289,14 @@ int main()
         bridge = executable.memory;
         data = state;
         executable.memory = nullptr; // Transfer ownership to the real shutdown code.
-        Check(!Shutdown() && bridge && data->active == 1 && !data->ownCallback && !data->depthCallback,
+        Check(!Shutdown() && bridge && data->active == 1 && !data->ownCallback && !data->depthCallback &&
+            !data->hudCallback && !data->loopExitCallback && !data->namesMaskCallback,
             "shutdown clears entry points and retains executing callback code");
         SetEvent(releaseCallback);
         Check(WaitForSingleObject(callbackThread, 2'000) == WAIT_OBJECT_0 && data->active == 0, "callback returns and drains before unload");
         CloseHandle(callbackThread); CloseHandle(callbackEntered); CloseHandle(releaseCallback);
         Check(Shutdown() && !bridge && !data, "real shutdown safely releases bridge after drain");
-        std::puts("Nametag tests passed: both perspectives, first-person/toggle/refusal, native depth selection, executable x64 bridges/registers/flags/ABI, coordinated patches/restoration and foreign changes.");
+        std::puts("Nametag tests passed: both perspectives, HUD suppression/local-only override, native names preference, first-person/toggle/refusal, depth selection, five executable bridges/registers/flags/ABI, coordinated restoration and foreign changes.");
         return 0;
     }
     catch (const std::exception& error)

@@ -85,6 +85,7 @@ namespace
         float thirdPersonFov = kDefaultThirdPersonZoomFov;
         ULONGLONG transitionDurationMs = kDefaultZoomTransitionDurationMs;
         float mouseSensitivity = 12.0f;
+        bool showNametagWhenHudHidden = true;
         int zoomKey = 'C';
         int nametagKey = VK_F7;
         int alwaysDayKey = VK_F6;
@@ -603,14 +604,17 @@ namespace
         if (g_nametagLogPath.empty()) return;
         char line[512]{};
         const int length = sprintf_s(line,
-            "pid=%lu event=%s status=%s ready=%ld enabled=%ld own_checks=%lld rear=%lld front=%lld depth=%lld\r\n",
+            "pid=%lu event=%s status=%s ready=%ld enabled=%ld own_checks=%lld rear=%lld front=%lld depth=%lld show_when_hud_hidden=%ld hud_overrides=%lld names_mask_overrides=%lld\r\n",
             GetCurrentProcessId(), event, nametag::status,
             InterlockedCompareExchange(&nametag::readiness, 0, 0),
             InterlockedCompareExchange(&nametag::enabled, 0, 0),
             InterlockedCompareExchange64(&nametag::ownChecks, 0, 0),
             InterlockedCompareExchange64(&nametag::shownRear, 0, 0),
             InterlockedCompareExchange64(&nametag::shownFront, 0, 0),
-            InterlockedCompareExchange64(&nametag::depthSelections, 0, 0));
+            InterlockedCompareExchange64(&nametag::depthSelections, 0, 0),
+            InterlockedCompareExchange(&nametag::showWhenHudHidden, 0, 0),
+            InterlockedCompareExchange64(&nametag::hudOverrides, 0, 0),
+            InterlockedCompareExchange64(&nametag::namesMaskOverrides, 0, 0));
         if (length > 0) g_diagnosticWriter.Submit(g_nametagLogPath.c_str(), line, static_cast<size_t>(length));
     }
 
@@ -850,6 +854,13 @@ namespace
             std::wstring keyName;
             return !ReadToolkitConfigValue(L"Shortcuts", name, keyName, configPath) || ParseVirtualKey(keyName, target);
         };
+        if (ReadToolkitConfigValue(L"nametag", L"show_when_hud_hidden", value, configPath))
+        {
+            value = TrimWhitespace(value);
+            if (_wcsicmp(value.c_str(), L"true") == 0) loaded.showNametagWhenHudHidden = true;
+            else if (_wcsicmp(value.c_str(), L"false") == 0) loaded.showNametagWhenHudHidden = false;
+            else return false;
+        }
         if (!readKey(L"Zoom", loaded.zoomKey) || !readKey(L"Nametag", loaded.nametagKey) ||
             !readKey(L"AlwaysDay", loaded.alwaysDayKey) || !readKey(L"FullBright", loaded.fullBrightKey) ||
             !readKey(L"StatusIndicator", loaded.indicatorKey) || !readKey(L"SafeDetach", loaded.exitKey)) return false;
@@ -2888,7 +2899,7 @@ namespace
         // Diagnostics are optional; failed startup drops logs without falling
         // back to synchronous writes on the keyboard-hook owner.
         g_diagnosticWriter.Start();
-        nametag::Initialize(g_gameModuleBase, g_supportedBuild);
+        nametag::Initialize(g_gameModuleBase, g_supportedBuild, g_zoomConfig.showNametagWhenHudHidden);
         LogNametagStatus("initialize");
         alwaysday::Initialize(g_gameModuleBase, g_supportedBuild);
         LogAlwaysDayStatus("initialize");

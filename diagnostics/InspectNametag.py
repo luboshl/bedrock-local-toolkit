@@ -116,9 +116,13 @@ def inspect(args):
 
         own = site(0x46B3201, bytes.fromhex("4c 39 e3 74 da 48 8b 03"))
         depth = site(0x1D55D5F, bytes.fromhex("c6 44 24 50 00"))
+        hud = site(0x46B3178, bytes.fromhex("4d 85 e4 0f 94 c1 08 c1"))
+        loop_exit = site(0x46B31F7, bytes.fromhex("0f 84 42 09 00 00"))
+        names_mask = site(0x46B0120, bytes.fromhex("34 01 8b 8d b4 39 00 00"))
         result = {"pid": args.pid, "package": package.value, "moduleBase": hex(base),
                   "timestamp": hex(timestamp), "imageSize": hex(image_size),
-                  "sites": {"ownPlayer": own, "depthMaterialArgument": depth}}
+                  "sites": {"ownPlayer": own, "depthMaterialArgument": depth,
+                            "hudSuppression": hud, "actorLoopExit": loop_exit, "namesHudMask": names_mask}}
         if own["state"] == depth["state"] == "jump":
             bridge = int(own["destination"], 16)
             if int(depth["destination"], 16) == bridge+512:
@@ -130,6 +134,21 @@ def inspect(args):
                     "destinationsVerified": (continuation == base+0x46B3209 and
                                              skip == base+0x46B31E0 and
                                              depth_continuation == base+0x1D55D64)}
+                if hud["state"] == loop_exit["state"] == "jump":
+                    hud_cb, loop_cb, hud_continue, loop_continue, other_labels, cleanup = struct.unpack(
+                        "<6Q", read(bridge+4096+48, 48))
+                    result["bridge"]["hudCallback"] = hex(hud_cb)
+                    result["bridge"]["loopExitCallback"] = hex(loop_cb)
+                    result["bridge"]["hudDestinationsVerified"] = (
+                        int(hud["destination"], 16) == bridge+1024 and
+                        int(loop_exit["destination"], 16) == bridge+1536 and
+                        hud_continue == base+0x46B3180 and loop_continue == base+0x46B31FD and
+                        other_labels == base+0x46B3B3F and cleanup == base+0x46B3FD7)
+                    if names_mask["state"] == "jump":
+                        mask_cb, mask_continue = struct.unpack("<2Q", read(bridge+4096+96, 16))
+                        result["bridge"]["namesMaskCallback"] = hex(mask_cb)
+                        result["bridge"]["namesMaskDestinationVerified"] = (
+                            int(names_mask["destination"], 16) == bridge+2048 and mask_continue == base+0x46B0128)
         if args.options:
             options = args.options
             option = struct.unpack("<Q", read(options+0x28, 8))[0]

@@ -20,7 +20,7 @@ Use this software at your own risk. It is provided "as is", without warranties o
 | --- | --- | --- |
 | Zoom | C (hold), mouse wheel | Smooth local FOV transition; defaults to 15° in first person and 28° in third person. The wheel adjusts the target FOV. FOV and sensitivity are changed only after their targets are uniquely verified. Default C Zoom and chat filtering were verified in a local game; the latest wheel and desktop mouse response still need a dedicated check. |
 | Always day | F6 | Keeps the rendered sun at noon and the moon below the horizon, with daytime sky colours. World time keeps progressing normally. The previous implementation failed its Fancy graphics test (issue #22). The updated rotation and camera paths pass automated tests and await an in-game visual retest. |
-| Nametag | F7 | Displays a custom name in third-person views. Verified in a local game. |
+| Nametag | F7 | Displays your name in both third-person views, including when F1 hides the HUD. Verified in a local game. |
 | Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
 
 Always day and Full Bright are enabled automatically after their profiles are verified, and Nametag is enabled when valid camera options are available. Their shortcuts toggle them off and on. Zoom preparation is automatic, but Zoom remains hold-to-use.
@@ -33,6 +33,8 @@ Always day and Full Bright are enabled automatically after their profiles are ve
 | Safe detach | F10 | Restores modified values and hooks, then detaches the module when restoration is safe. |
 
 Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Set `FirstPersonFov` and `ThirdPersonFov` separately under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script copies the configuration next to the launcher. The older `Fov` setting remains supported as a fallback for both perspectives.
+
+Under `[nametag]`, `show_when_hud_hidden=true` keeps your own name visible when F1 hides the HUD; it defaults to `true`. Set it to `false` to hide the name with the HUD. F7 still controls Nametag, and the name stays hidden in first person. Other actors' names and hovered-object labels retain their native HUD suppression. Restart the module to apply configuration changes.
 
 Module shortcuts work only on verified gameplay screens. In chat, menus, and other text entry screens, keys and the mouse wheel remain available to Minecraft. Opening one of these screens restores the original FOV and ends active Zoom; release any held shortcut before using it again after returning to gameplay. This screen filtering passes isolated tests but still needs in-game verification.
 

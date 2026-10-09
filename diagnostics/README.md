@@ -23,6 +23,8 @@ python diagnostics\InspectScreenInput.py --snapshot artifacts\nametag-image
 
 A static inspection, snapshot, or diagnostic counter does not replace in-game behavior verification. The technical rationale for the current hooks and reference addresses for the supported build are in [FINDINGS.md](../FINDINGS.md); exact bytes are in `GameMod\*Profile.h`.
 
+`InspectNametag.py` reports the own-player, depth-material, HUD-suppression, actor-loop-exit, and temporary player-name-mask sites. For installed bridges it checks their continuation addresses and reports active callbacks. The Nametag log includes the configured `show_when_hud_hidden`, producer `hud_overrides`, and metadata `names_mask_overrides` counters. A producer counter alone cannot establish visibility: both native HUD gates must be covered, and the result must be checked in-game.
+
 `InspectScreenInput.py` checks the native screen getters, transition producer, constructors, background name, and vtable bindings against an image snapshot with the supported PE identity. ScreenView `+0x460` is a transition flag; stable debug/toast overlays have zero there. The native cubemap is accepted only at the bottom of the shared stack, after verifying its separate vtable and fixed-name getter. The module's Zoom log records `screen_profile` and `screen_client`; zero means the profile or client is not available and shortcuts must remain disabled.
 
 Default `C` Zoom in gameplay, typing `C` in chat without Zoom, returning to gameplay, `F6`–`F9` toggles, and `F10` safe detach were confirmed in a local single-player world. Logs also recorded Zoom restoration, rendering toggles, and hook restoration; the module was absent from the process after detach.

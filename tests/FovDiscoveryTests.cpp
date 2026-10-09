@@ -43,6 +43,15 @@ namespace
         Check(LoadZoomConfigFromPath(config.Path()), "load defaults without a config");
         Check(g_zoomConfig.firstPersonFov == 15.0f && g_zoomConfig.thirdPersonFov == 28.0f,
             "separate default FOVs for each perspective");
+        Check(g_zoomConfig.showNametagWhenHudHidden, "HUD-hidden nametag enabled by default");
+        config.Set(L"nametag", L"show_when_hud_hidden", L" false ");
+        Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.showNametagWhenHudHidden,
+            "HUD-hidden nametag can be disabled");
+        config.Set(L"nametag", L"show_when_hud_hidden", L"invalid");
+        Check(!LoadZoomConfigFromPath(config.Path()), "invalid nametag boolean rejected");
+        config.Set(L"NAMETAG", L"SHOW_WHEN_HUD_HIDDEN", L" TrUe ");
+        Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.showNametagWhenHudHidden,
+            "nametag setting ignores case and surrounding whitespace");
         config.Set(L"Zoom", L"Fov", L"33.5");
         config.Set(L"Zoom", L"TransitionDurationMs", L"275");
         config.Set(L"Zoom", L"MouseSensitivity", L"27.5");

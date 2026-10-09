@@ -5,6 +5,9 @@ testVector DWORD 11223344h, 55667788h, 12345678h, 76543210h
 .code
 public InvokeOwnBridge, InvokeDepthBridge, OwnContinueTest, OwnSkipTest, DepthContinueTest
 public ClobberTrue, ClobberFalse
+public InvokeHudBridge, InvokeLoopExitBridge, HudContinueTest
+public LoopContinueTest, OtherLabelsTest, HudCleanupTest
+public InvokeNamesMaskBridge, NamesMaskContinueTest
 
 prepare MACRO
     push rbx
@@ -36,6 +39,52 @@ InvokeDepthBridge PROC
     cmp rax,rax
     jmp rcx
 InvokeDepthBridge ENDP
+
+InvokeHudBridge PROC
+    prepare
+    mov al,dl
+    jmp rcx
+InvokeHudBridge ENDP
+
+InvokeLoopExitBridge PROC
+    prepare
+    cmp rdx,0
+    jmp rcx
+InvokeLoopExitBridge ENDP
+
+InvokeNamesMaskBridge PROC
+    prepare
+    mov qword ptr [rsp+60h],rbp
+    mov rbp,r8
+    sub rbp,39B4h
+    mov al,dl
+    jmp rcx
+InvokeNamesMaskBridge ENDP
+
+NamesMaskContinueTest PROC
+    ; Continue the actual native AND and store without touching other metadata.
+    and cl,al
+    mov byte ptr [r9+160],cl
+    mov rbp,qword ptr [rsp+60h]
+    jmp capture
+NamesMaskContinueTest ENDP
+
+HudContinueTest PROC
+    mov byte ptr [r9+160],cl
+    jmp capture
+HudContinueTest ENDP
+LoopContinueTest PROC
+    mov byte ptr [r9+160],0
+    jmp capture
+LoopContinueTest ENDP
+OtherLabelsTest PROC
+    mov byte ptr [r9+160],1
+    jmp capture
+OtherLabelsTest ENDP
+HudCleanupTest PROC
+    mov byte ptr [r9+160],2
+    jmp capture
+HudCleanupTest ENDP
 
 OwnContinueTest PROC
     mov byte ptr [r9+160],1

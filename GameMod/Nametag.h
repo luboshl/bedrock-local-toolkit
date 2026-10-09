@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <vector>
 #include "FovDiscovery.h"
+#include "NametagHudProfile.h"
 
 namespace nametag
 {
@@ -35,6 +36,14 @@ namespace nametag
         uintptr_t ownContinue = 0;
         uintptr_t ownSkip = 0;
         uintptr_t depthContinue = 0;
+        void* volatile hudCallback = nullptr;
+        void* volatile loopExitCallback = nullptr;
+        uintptr_t hudContinue = 0;
+        uintptr_t loopContinue = 0;
+        uintptr_t otherLabels = 0;
+        uintptr_t hudCleanup = 0;
+        void* volatile namesMaskCallback = nullptr;
+        uintptr_t namesMaskContinue = 0;
     };
 
     struct Patch
@@ -52,7 +61,7 @@ namespace nametag
     inline uintptr_t imageBase = 0;
     inline unsigned char* bridge = nullptr;
     inline BridgeData* data = nullptr;
-    inline std::array<Patch, 2> patches{};
+    inline std::array<Patch, 5> patches{};
     inline volatile LONG enabled = 0;
     inline volatile LONG readiness = 0; // 0 starting, 1 waiting, 2 ready, 3 refused
     inline volatile LONG enableByDefaultPending = 0;
@@ -61,7 +70,11 @@ namespace nametag
     inline volatile LONG64 shownRear = 0;
     inline volatile LONG64 shownFront = 0;
     inline volatile LONG64 depthSelections = 0;
+    inline volatile LONG showWhenHudHidden = 1;
+    inline volatile LONG64 hudOverrides = 0;
+    inline volatile LONG64 namesMaskOverrides = 0;
     inline thread_local uintptr_t frameLocalPlayer = 0;
+    inline thread_local bool frameHudHidden = false;
     inline const char* status = "starting"; // Written/read only by the worker.
     inline bool stopping = false;
 
@@ -86,6 +99,36 @@ namespace nametag
             info.State == MEM_COMMIT && info.Type == MEM_IMAGE && info.Protect == PAGE_EXECUTE_READ &&
             reinterpret_cast<uintptr_t>(info.AllocationBase) == imageBase &&
             address + size <= reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
+    }
+
+    template<size_t N>
+    inline bool MatchesCode(uintptr_t address, const unsigned char (&expected)[N])
+    {
+        if (!IsImageCode(address, N)) return false;
+        for (size_t offset = 0; offset < N; offset += 64)
+            if (!Matches(address + offset, expected + offset, (std::min)(N - offset, size_t{64}))) return false;
+        return true;
+    }
+
+    inline bool ValidateHudProfile(uintptr_t base)
+    {
+        using namespace hudprofile;
+        uintptr_t getter = 0, namesGetter = 0, splitNamesGetter = 0;
+        return Read(base + kGetterSlotRva, &getter, sizeof(getter)) && getter == base + kGetterRva &&
+            Read(base + kNamesGetterSlotRva, &namesGetter, sizeof(namesGetter)) && namesGetter == base + kNamesGetterRva &&
+            Read(base + kSplitNamesGetterSlotRva, &splitNamesGetter, sizeof(splitNamesGetter)) && splitNamesGetter == base + kSplitNamesGetterRva &&
+            MatchesCode(base + kProducerFrameRva, kProducerFrame) &&
+            MatchesCode(base + kLocalPlayerRva, kLocalPlayer) &&
+            MatchesCode(base + kGateContextRva, kGateContext) &&
+            MatchesCode(base + kLoopExitContextRva, kLoopExitContext) &&
+            MatchesCode(base + kOtherLabelsContextRva, kOtherLabels) &&
+            MatchesCode(base + kCleanupContextRva, kCleanupContext) &&
+            MatchesCode(base + kGetterContextRva, kGetterContext) &&
+            MatchesCode(base + kMetadataFrameRva, kMetadataFrame) &&
+            MatchesCode(base + kNamesSourceRva, kNamesSource) &&
+            MatchesCode(base + kNamesMaskContextRva, kNamesMaskContext) &&
+            MatchesCode(base + kNamesGetterRva, kNamesGetter) &&
+            MatchesCode(base + kSplitNamesGetterRva, kSplitNamesGetter);
     }
 
     inline bool ValidateProfile(uintptr_t base, bool supported)
@@ -113,7 +156,7 @@ namespace nametag
             IsImageCode(base + 0x1ED337B, sizeof(materialSelector)) &&
             Matches(base + kOwnGateRva - 4, ownContext, sizeof(ownContext)) &&
             Matches(base + kDepthGateRva - 10, depthContext, sizeof(depthContext)) &&
-            Matches(base + 0x1ED337B, materialSelector, sizeof(materialSelector));
+            Matches(base + 0x1ED337B, materialSelector, sizeof(materialSelector)) && ValidateHudProfile(base);
     }
 
     inline int Perspective(uintptr_t options)
@@ -146,13 +189,57 @@ namespace nametag
     {
         // The pointers come from the native actor loop in the current frame.
         frameLocalPlayer = localPlayer;
-        if (actor != localPlayer) return true;
+        // The HUD override admits only the local name, never other actors.
+        if (actor != localPlayer) return !frameHudHidden;
         InterlockedIncrement64(&ownChecks);
         if (!actor || !InterlockedCompareExchange(&enabled, 0, 0)) return false;
         const int perspective = Perspective(static_cast<uintptr_t>(InterlockedCompareExchange64(&optionsAddress, 0, 0)));
         if (perspective == 1) InterlockedIncrement64(&shownRear);
         if (perspective == 2) InterlockedIncrement64(&shownFront);
         return perspective == 1 || perspective == 2;
+    }
+
+    inline unsigned char __fastcall HudSuppression(uintptr_t localPlayer, unsigned char nativeHidden)
+    {
+        // This is temporary render context, refreshed at the native gate on
+        // each producer invocation. Never write the native HUD option/actor.
+        frameLocalPlayer = localPlayer;
+        frameHudHidden = nativeHidden != 0;
+        if (nativeHidden == 1 && localPlayer && InterlockedCompareExchange(&enabled, 0, 0) &&
+            InterlockedCompareExchange(&showWhenHudHidden, 0, 0))
+        {
+            const int perspective = Perspective(static_cast<uintptr_t>(InterlockedCompareExchange64(&optionsAddress, 0, 0)));
+            if (perspective == 1 || perspective == 2)
+            {
+                InterlockedIncrement64(&hudOverrides);
+                return 0;
+            }
+        }
+        return static_cast<unsigned char>((localPlayer ? 0 : 1) | nativeHidden);
+    }
+
+    inline bool __fastcall SkipOtherHudLabels()
+    {
+        // The code following the actor loop also emits hovered-object text.
+        // It must retain the native suppression even when our name is shown.
+        return frameHudHidden;
+    }
+
+    inline unsigned char __fastcall NamesHudMask(unsigned char nativeHidden)
+    {
+        // Only the transient in-game player-name mask is changed. The native
+        // names preference and all other metadata restrictions still apply.
+        if (nativeHidden == 1 && InterlockedCompareExchange(&enabled, 0, 0) &&
+            InterlockedCompareExchange(&showWhenHudHidden, 0, 0))
+        {
+            const int perspective = Perspective(static_cast<uintptr_t>(InterlockedCompareExchange64(&optionsAddress, 0, 0)));
+            if (perspective == 1 || perspective == 2)
+            {
+                InterlockedIncrement64(&namesMaskOverrides);
+                return 1;
+            }
+        }
+        return nativeHidden ^ 1;
     }
 
     inline bool __fastcall UseDepth(uintptr_t actor)
@@ -163,7 +250,7 @@ namespace nametag
         return own;
     }
 
-    // Emit two small, relocatable x64 bridges. Code is RX; callback pointers,
+    // Emit five small, relocatable x64 bridges. Code is RX; callback pointers,
     // counters and destinations are in a separate RW page. No game instruction
     // with RIP-relative data is copied, and no third-party hook engine is used.
     class Code
@@ -263,6 +350,75 @@ namespace nametag
         depth.Restore();
         depth.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->depthContinue));
         depth.Finish(memory + 512);
+
+        Code hud(reinterpret_cast<uintptr_t>(memory + 1024));
+        hud.Save(false);
+        hud.Rip({0xF0, 0xFF, 0x05}, activeAddress);
+        hud.Rip({0x48, 0x8B, 0x05}, reinterpret_cast<uintptr_t>(&state->hudCallback));
+        hud.Emit({0x48, 0x85, 0xC0});
+        const size_t nativeHud = hud.Branch(0x84);
+        // Original AL is at saved RAX (+0xB0); R12 is the native local player.
+        hud.Emit({0x4C, 0x89, 0xE1, 0x0F, 0xB6, 0x94, 0x24, 0xB0, 0, 0, 0, 0xFF, 0xD0});
+        hud.Emit({0x88, 0x84, 0x24, 0xA8, 0, 0, 0}); // replace saved CL only
+        hud.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
+        hud.Restore();
+        // TEST produces the same defined flags as the original OR of CL/AL.
+        hud.Emit({0x84, 0xC9});
+        hud.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->hudContinue));
+        hud.Bind(nativeHud);
+        hud.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
+        hud.Restore();
+        hud.Emit({0x4D, 0x85, 0xE4, 0x0F, 0x94, 0xC1, 0x08, 0xC1});
+        hud.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->hudContinue));
+        hud.Finish(memory + 1024);
+
+        Code loop(reinterpret_cast<uintptr_t>(memory + 1536));
+        loop.Save(false);
+        loop.Rip({0xF0, 0xFF, 0x05}, activeAddress);
+        // Only the taken native JE exits the loop; preserve its saved ZF.
+        loop.Emit({0xF6, 0x84, 0x24, 0xB8, 0, 0, 0, 0x40});
+        const size_t continueLoop = loop.Branch(0x84);
+        loop.Rip({0x48, 0x8B, 0x05}, reinterpret_cast<uintptr_t>(&state->loopExitCallback));
+        loop.Emit({0x48, 0x85, 0xC0});
+        const size_t otherLabels = loop.Branch(0x84);
+        loop.Emit({0xFF, 0xD0, 0x84, 0xC0});
+        const size_t nativeLabels = loop.Branch(0x84);
+        loop.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
+        loop.Restore();
+        loop.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->hudCleanup));
+        loop.Bind(otherLabels);
+        loop.Bind(nativeLabels);
+        loop.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
+        loop.Restore();
+        loop.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->otherLabels));
+        loop.Bind(continueLoop);
+        loop.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
+        loop.Restore();
+        loop.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->loopContinue));
+        loop.Finish(memory + 1536);
+
+        Code mask(reinterpret_cast<uintptr_t>(memory + 2048));
+        mask.Save(false);
+        mask.Rip({0xF0, 0xFF, 0x05}, activeAddress);
+        mask.Rip({0x48, 0x8B, 0x05}, reinterpret_cast<uintptr_t>(&state->namesMaskCallback));
+        mask.Emit({0x48, 0x85, 0xC0});
+        const size_t nativeMask = mask.Branch(0x84);
+        mask.Emit({0x0F, 0xB6, 0x8C, 0x24, 0xB0, 0, 0, 0, 0xFF, 0xD0});
+        mask.Emit({0x88, 0x84, 0x24, 0xB0, 0, 0, 0}); // replace saved AL only
+        mask.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
+        mask.Restore();
+        mask.Emit({0x84, 0xC0}); // defined flags of native XOR AL,1
+        const size_t loadNames = mask.Jump();
+        mask.Bind(nativeMask);
+        mask.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
+        mask.Restore();
+        mask.Emit({0x34, 0x01});
+        mask.Bind(loadNames);
+        mask.Emit({0x8B, 0x8D, 0xB4, 0x39, 0, 0}); // preserve native names preference
+        mask.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->namesMaskContinue));
+        mask.Finish(memory + 2048);
+        if (own.Size() > 512 || depth.Size() > 512 || hud.Size() > 512 || loop.Size() > 512 || mask.Size() > 512)
+            throw std::runtime_error("nametag bridge size");
     }
 
     // All storage and handles are prepared before suspending any game thread.
@@ -392,8 +548,8 @@ namespace nametag
         SYSTEM_INFO info{}; GetSystemInfo(&info);
         const uintptr_t granularity = info.dwAllocationGranularity;
         const uintptr_t aligned = target & ~(granularity - 1);
-        // Both observed code sites lie within 42 MiB; a nearby allocation can
-        // serve both. Fixed RVAs never imply a fixed allocation address.
+        // All five code sites lie within 42 MiB; a nearby allocation can
+        // serve them together. Fixed RVAs never imply a fixed allocation address.
         for (uintptr_t distance = granularity; distance < 0x40000000; distance += granularity)
         {
             for (uintptr_t candidate : {aligned + distance, aligned > distance ? aligned - distance : 0})
@@ -415,10 +571,10 @@ namespace nametag
         if (!frozen.Freeze()) return false;
         for (const auto& patch : patches)
             if (!frozen.Outside(patch.address, patch.size)) return false;
-        // Check all expected bytes before writing either site.
+        // Check all sites, including ones already in the desired state.
         for (const auto& patch : patches)
-            if (patch.installed != install && !Matches(patch.address,
-                install ? patch.original.data() : patch.replacement.data(), patch.size)) return false;
+            if (!patch.size || !Matches(patch.address,
+                patch.installed ? patch.replacement.data() : patch.original.data(), patch.size)) return false;
         for (auto& patch : patches)
         {
             if (patch.installed != install && !WritePatch(patch, install)) return false;
@@ -445,11 +601,16 @@ namespace nametag
         InterlockedExchange(&readiness, 3);
         InterlockedExchange64(&optionsAddress, 0);
         if (!bridge) return true;
-        if ((patches[0].installed || patches[1].installed || patches[0].protectionPending || patches[1].protectionPending ||
-            patches[0].cachePending || patches[1].cachePending) && !ChangePatches(false))
+        bool pending = false;
+        for (const auto& patch : patches)
+            pending |= patch.installed || patch.protectionPending || patch.cachePending;
+        if (pending && !ChangePatches(false))
         { status = "restore-pending"; return false; }
         InterlockedExchangePointer(&data->ownCallback, nullptr);
         InterlockedExchangePointer(&data->depthCallback, nullptr);
+        InterlockedExchangePointer(&data->hudCallback, nullptr);
+        InterlockedExchangePointer(&data->loopExitCallback, nullptr);
+        InterlockedExchangePointer(&data->namesMaskCallback, nullptr);
         if (InterlockedCompareExchange(&data->active, 0, 0))
         { status = "callbacks-draining"; return false; }
         // Counters begin before callback loads. After clearing the pointers and
@@ -467,11 +628,12 @@ namespace nametag
         return true;
     }
 
-    inline bool Initialize(uintptr_t base, bool supported)
+    inline bool Initialize(uintptr_t base, bool supported, bool showHidden = true)
     {
         InterlockedExchange(&enabled, 0);
         InterlockedExchange(&enableByDefaultPending, 0);
         InterlockedExchange64(&optionsAddress, 0);
+        InterlockedExchange(&showWhenHudHidden, showHidden ? 1 : 0);
         stopping = false;
         if (!ValidateProfile(base, supported))
         { status = "profile-refused"; InterlockedExchange(&readiness, 3); return false; }
@@ -480,9 +642,17 @@ namespace nametag
         data = reinterpret_cast<BridgeData*>(bridge + kDataOffset);
         data->ownCallback = reinterpret_cast<void*>(&ShouldInclude);
         data->depthCallback = reinterpret_cast<void*>(&UseDepth);
+        data->hudCallback = reinterpret_cast<void*>(&HudSuppression);
+        data->loopExitCallback = reinterpret_cast<void*>(&SkipOtherHudLabels);
+        data->namesMaskCallback = reinterpret_cast<void*>(&NamesHudMask);
         data->ownContinue = base + kOwnGateRva + sizeof(kOwnOriginal);
         data->ownSkip = base + kOwnSkipRva;
         data->depthContinue = base + kDepthGateRva + sizeof(kDepthOriginal);
+        data->hudContinue = base + hudprofile::kGateRva + sizeof(hudprofile::kGateOriginal);
+        data->loopContinue = base + hudprofile::kLoopExitRva + sizeof(hudprofile::kLoopExitOriginal);
+        data->otherLabels = base + hudprofile::kOtherLabelsRva;
+        data->hudCleanup = base + hudprofile::kCleanupRva;
+        data->namesMaskContinue = base + hudprofile::kNamesMaskRva + sizeof(hudprofile::kNamesMaskOriginal);
         try { BuildBridges(bridge, data); }
         catch (...)
         {
@@ -492,6 +662,9 @@ namespace nametag
         DWORD previous = 0;
         const bool prepared = Jump(patches[0], base + kOwnGateRva, kOwnOriginal, sizeof(kOwnOriginal), reinterpret_cast<uintptr_t>(bridge)) &&
             Jump(patches[1], base + kDepthGateRva, kDepthOriginal, sizeof(kDepthOriginal), reinterpret_cast<uintptr_t>(bridge + 512)) &&
+            Jump(patches[2], base + hudprofile::kGateRva, hudprofile::kGateOriginal, sizeof(hudprofile::kGateOriginal), reinterpret_cast<uintptr_t>(bridge + 1024)) &&
+            Jump(patches[3], base + hudprofile::kLoopExitRva, hudprofile::kLoopExitOriginal, sizeof(hudprofile::kLoopExitOriginal), reinterpret_cast<uintptr_t>(bridge + 1536)) &&
+            Jump(patches[4], base + hudprofile::kNamesMaskRva, hudprofile::kNamesMaskOriginal, sizeof(hudprofile::kNamesMaskOriginal), reinterpret_cast<uintptr_t>(bridge + 2048)) &&
             VirtualProtect(bridge, kDataOffset, PAGE_EXECUTE_READ, &previous) &&
             FlushInstructionCache(GetCurrentProcess(), bridge, kDataOffset);
         bool installed = false;
@@ -527,7 +700,8 @@ namespace nametag
 
     inline void BindOptions(uintptr_t options)
     {
-        if (!bridge || stopping || !patches[0].installed || !patches[1].installed) return;
+        if (!bridge || stopping) return;
+        for (const auto& patch : patches) if (!patch.installed) return;
         const bool valid = Perspective(options) >= 0;
         InterlockedExchange64(&optionsAddress, valid ? static_cast<LONG64>(options) : 0);
         InterlockedExchange(&readiness, valid ? 2 : 1);

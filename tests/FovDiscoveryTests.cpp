@@ -94,6 +94,91 @@ namespace
         Check(!LoadZoomConfigFromPath(config.Path()), "duplicate shortcuts rejected");
     }
 
+    void TestFovCounterConfig()
+    {
+        TemporaryToolkitConfig config;
+        Check(!fovcounter::LoadEnabled(config.Path()), "FOV counter is disabled by default");
+        config.Set(L"FOV_COUNTER", L"ENABLED", L" TrUe ");
+        Check(fovcounter::LoadEnabled(config.Path()), "FOV counter accepts case and surrounding whitespace");
+        config.Set(L"fov_counter", L"enabled", L"false");
+        Check(!fovcounter::LoadEnabled(config.Path()), "live counter config disables without module reload");
+        config.Set(L"fov_counter", L"enabled", L"true");
+        config.Set(L"Zoom", L"FirstPersonFov", L"invalid");
+        const ZoomConfig original = g_zoomConfig;
+        Check(fovcounter::LoadEnabled(config.Path()) &&
+            g_zoomConfig.firstPersonFov == original.firstPersonFov &&
+            g_zoomConfig.zoomKey == original.zoomKey,
+            "live counter config is independent of restart-only Zoom and shortcut settings");
+        for (const wchar_t* invalid : {L"", L"yes", L"1", L"true-but-truncated", L"invalid"})
+        {
+            config.Set(L"fov_counter", L"enabled", invalid);
+            Check(!fovcounter::LoadEnabled(config.Path()), "invalid counter boolean fails closed");
+        }
+        config.Set(L"fov_counter", L"enabled", nullptr);
+        Check(!fovcounter::LoadEnabled(config.Path()), "removed counter setting disables the counter");
+    }
+
+    void TestFovCounterPresentation()
+    {
+        Check(fovcounter::DisplayValue(70.0f) == 70 &&
+            fovcounter::DisplayValue(42.5f) == 43 &&
+            fovcounter::DisplayValue(1.0f) == 1 && fovcounter::DisplayValue(120.0f) == 120,
+            "counter rounds valid live values to the nearest degree");
+        for (const float value : {0.0f, 121.0f, (std::numeric_limits<float>::infinity)(),
+            (std::numeric_limits<float>::quiet_NaN)()})
+            Check(fovcounter::DisplayValue(value) == -1, "counter rejects invalid FOVs");
+        const RECT panel = fovcounter::PanelRect({-1920, 100, 0, 1180}, 100, 32);
+        Check(panel.left == -1912 && panel.bottom == 1172 && panel.right == -1812 && panel.top == 1140,
+            "counter anchors to the game client's bottom-left, including other monitors");
+        Check(fovcounter::Pixel(0) == 0xA6000000 && fovcounter::Pixel(255) == 0xFFFFFFFF,
+            "background has 65 percent opacity without fading the white text");
+        const uint32_t pixel = fovcounter::Pixel(128);
+        Check((pixel >> 24) >= (pixel & 0xFF), "text edge pixels use premultiplied alpha");
+    }
+
+    void TestFovCounterShutdown()
+    {
+        TemporaryToolkitConfig config;
+        struct CounterScope
+        {
+            fovcounter::Counter counter;
+            ~CounterScope()
+            {
+                counter.BeginShutdown();
+                while (!counter.FinishShutdown()) Sleep(1);
+            }
+        } scope;
+        auto& counter = scope.counter;
+        Check(counter.Start(GetModuleHandleW(nullptr), config.Path()), "counter thread starts");
+        const ULONGLONG deadline = GetTickCount64() + 5'000;
+        while (counter.Window() == nullptr)
+        {
+            Check(GetTickCount64() < deadline, "counter creates its independent overlay");
+            Sleep(1);
+        }
+        Check(!IsWindowVisible(counter.Window()) && !counter.Enabled(),
+            "default counter stays hidden independently of the status indicator");
+        config.Set(L"fov_counter", L"enabled", L"true");
+        while (!counter.Enabled())
+        {
+            Check(GetTickCount64() < deadline, "counter thread reloads enabled without restarting");
+            Sleep(1);
+        }
+        config.Set(L"fov_counter", L"enabled", L"false");
+        while (counter.Enabled())
+        {
+            Check(GetTickCount64() < deadline, "counter thread reloads disabled without restarting");
+            Sleep(1);
+        }
+        counter.BeginShutdown();
+        while (!counter.FinishShutdown())
+        {
+            Check(GetTickCount64() < deadline, "counter drains before module unload");
+            Sleep(1);
+        }
+        Check(counter.Window() == nullptr, "counter destroys its window before shutdown completes");
+    }
+
     void TestZoomTransitionInterpolation()
     {
         Check(InterpolateZoomFov(70.0f, 10.0f, 0, 50) == 70.0f,
@@ -432,6 +517,35 @@ namespace
         g_zoomRestorePending = false;
     }
 
+    void TestFovCounterLiveValue()
+    {
+        Fixture fixture;
+        g_fovScan.result = FovScanResult::Unique;
+        g_fovScan.foundTarget = fixture.target;
+        Check(ReadFovCounterValue() == 70, "counter reads the verified live FOV");
+        fixture.Value(85.0f);
+        Check(ReadFovCounterValue() == 85, "counter follows in-game FOV setting changes");
+        const float minimum = 1.0f;
+        std::memcpy(fixture.memory + 1040, &minimum, sizeof(minimum));
+        fixture.Value(15.0f);
+        Check(ReadFovCounterValue() == 15, "counter follows live Zoom rather than its configured target");
+        fixture.Value(42.5f);
+        Check(ReadFovCounterValue() == 43, "counter follows intermediate Zoom transition values");
+        g_fovScan.foundTarget.owner = 0;
+        Check(ReadFovCounterValue() == -1, "counter hides on changed target identity");
+        g_fovScan.foundTarget = fixture.target;
+        fixture.Value((std::numeric_limits<float>::quiet_NaN)());
+        Check(ReadFovCounterValue() == -1, "counter hides on unreadable or invalid live FOV");
+        g_fovScan.result = FovScanResult::Multiple;
+        fixture.Value(70.0f);
+        Check(ReadFovCounterValue() == -1, "ambiguous discovery cannot display a guessed FOV");
+        g_fovScan.result = FovScanResult::Unique;
+        g_supportedBuild = false;
+        Check(ReadFovCounterValue() == -1, "counter refuses an unsupported build");
+        g_supportedBuild = true;
+        g_fovScan = {};
+    }
+
     void TestZoomTransitionTiming()
     {
         Fixture fixture;
@@ -503,6 +617,10 @@ int main()
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
         TestToolkitConfig();
+        TestFovCounterConfig();
+        TestFovCounterPresentation();
+        TestFovCounterShutdown();
+        TestFovCounterLiveValue();
         TestScreenInput();
         TestZoomTransitionInterpolation();
         TestDeferredZoomDiagnostics();

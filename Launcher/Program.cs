@@ -160,7 +160,7 @@ internal static class Program
             ReadKey("AlwaysDay", defaults.AlwaysDay), ReadKey("FullBright", defaults.FullBright),
             ReadKey("StatusIndicator", defaults.StatusIndicator), ReadKey("SafeDetach", defaults.SafeDetach),
             ReadBoolean(nametagValues, "show_when_hud_hidden", defaults.ShowNametagWhenHudHidden),
-            ReadBoolean(fovCounterValues, "enabled", defaults.ShowFovCounter));
+            fovCounterValues.TryGetValue("enabled", out var enabled) && bool.TryParse(enabled, out var showFovCounter) && showFovCounter);
         var keys = new[] { config.Zoom, config.Nametag, config.AlwaysDay, config.FullBright, config.StatusIndicator, config.SafeDetach };
         if (keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != keys.Length)
             throw new InvalidDataException($"Keyboard shortcuts in {path} must be unique.");

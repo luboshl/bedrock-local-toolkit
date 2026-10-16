@@ -2939,6 +2939,7 @@ namespace
         if (workerTimer == nullptr)
             workerTimer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_MODIFY_STATE | SYNCHRONIZE);
         ULONGLONG lastOverlayUpdateAt = 0;
+        ULONGLONG lastCounterUpdateAt = 0;
         bool stopWhenRestored = false;
         bool shortcutsWereAllowed = false;
         screens::Discovery::State lastScreenDiscoveryState = screens::Discovery::State::Idle;
@@ -3269,8 +3270,13 @@ namespace
                     ApplyZoom(gameWindow);
                 }
             }
-            g_fovCounter.Publish(gameWindow, active && !stopWhenRestored && g_fovCounter.Enabled() ?
-                ReadFovCounterValue() : -1);
+            if (!active || stopWhenRestored || !g_fovCounter.Enabled())
+                g_fovCounter.Publish(gameWindow, -1);
+            else if (loopTime - lastCounterUpdateAt >= 16)
+            {
+                g_fovCounter.Publish(gameWindow, ReadFovCounterValue());
+                lastCounterUpdateAt = loopTime;
+            }
             UpdateZoomDiagnostics();
             WaitForWorkerInput(workerTimer, g_fovScan.result == FovScanResult::Running ||
                 (g_zoom.transitionActive && !g_zoomRestorePending) ? 1 : 16);

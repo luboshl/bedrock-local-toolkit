@@ -28,6 +28,7 @@
 #include "FullBright.h"
 #include "ScreenInput.h"
 #include "DiagnosticWriter.h"
+#include "FovCounter.h"
 
 namespace
 {
@@ -200,6 +201,8 @@ namespace
 
     HMODULE g_module = nullptr;
     HWND g_overlayWindow = nullptr;
+    fovcounter::Counter g_fovCounter;
+    std::wstring g_toolkitConfigPath;
     HWND g_trackedGameWindow = nullptr;
     HHOOK g_zoomKeyboardHook = nullptr;
     volatile LONG g_zoomKeyDown = 0;
@@ -346,7 +349,8 @@ namespace
     {
         DWORD processId = 0;
         GetWindowThreadProcessId(window, &processId);
-        if (processId == GetCurrentProcessId() && window != g_overlayWindow && IsWindowVisible(window))
+        if (processId == GetCurrentProcessId() && window != g_overlayWindow &&
+            window != g_fovCounter.Window() && IsWindowVisible(window))
         {
             *reinterpret_cast<HWND*>(result) = window;
             return FALSE;
@@ -883,6 +887,7 @@ namespace
         if (separator == std::wstring::npos) return false;
         configPath.resize(separator + 1);
         configPath += L"bedrock-toolkit.ini";
+        g_toolkitConfigPath = configPath;
         return LoadZoomConfigFromPath(configPath);
     }
 
@@ -2740,6 +2745,16 @@ namespace
         AdvanceFovScan();
     }
 
+    int ReadFovCounterValue()
+    {
+        if (!g_supportedBuild || g_fovScan.result != FovScanResult::Unique) return -1;
+        fov::Target current;
+        float values[5]{};
+        if (!ReadVerifiedTarget(g_fovScan.foundTarget.options, current, values) ||
+            !fov::SameTarget(current, g_fovScan.foundTarget)) return -1;
+        return fovcounter::DisplayValue(values[2]);
+    }
+
     UINT OverlayPositionFlags(bool indicatorVisible)
     {
         return SWP_NOACTIVATE | SWP_NOOWNERZORDER |
@@ -2899,6 +2914,7 @@ namespace
         // Diagnostics are optional; failed startup drops logs without falling
         // back to synchronous writes on the keyboard-hook owner.
         g_diagnosticWriter.Start();
+        g_fovCounter.Start(g_module, g_toolkitConfigPath);
         nametag::Initialize(g_gameModuleBase, g_supportedBuild, g_zoomConfig.showNametagWhenHudHidden);
         LogNametagStatus("initialize");
         alwaysday::Initialize(g_gameModuleBase, g_supportedBuild);
@@ -2923,6 +2939,7 @@ namespace
         if (workerTimer == nullptr)
             workerTimer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_MODIFY_STATE | SYNCHRONIZE);
         ULONGLONG lastOverlayUpdateAt = 0;
+        ULONGLONG lastCounterUpdateAt = 0;
         bool stopWhenRestored = false;
         bool shortcutsWereAllowed = false;
         screens::Discovery::State lastScreenDiscoveryState = screens::Discovery::State::Idle;
@@ -3253,11 +3270,19 @@ namespace
                     ApplyZoom(gameWindow);
                 }
             }
+            if (!active || stopWhenRestored || !g_fovCounter.Enabled())
+                g_fovCounter.Publish(gameWindow, -1);
+            else if (loopTime - lastCounterUpdateAt >= 16)
+            {
+                g_fovCounter.Publish(gameWindow, ReadFovCounterValue());
+                lastCounterUpdateAt = loopTime;
+            }
             UpdateZoomDiagnostics();
             WaitForWorkerInput(workerTimer, g_fovScan.result == FovScanResult::Running ||
                 (g_zoom.transitionActive && !g_zoomRestorePending) ? 1 : 16);
         }
 
+        g_fovCounter.BeginShutdown();
         for (const GameInputHook& hook : g_gameInputHooks)
         {
             if (hook.handle != nullptr) UnhookWindowsHookEx(hook.handle);
@@ -3296,7 +3321,7 @@ namespace
 
         FlushZoomStatusLogs();
         g_diagnosticWriter.BeginShutdown();
-        while (!g_diagnosticWriter.FinishShutdown())
+        while (!g_diagnosticWriter.FinishShutdown() || !g_fovCounter.FinishShutdown())
         {
             // Never unload while the writer still executes module code.
             MSG diagnosticMessage{};

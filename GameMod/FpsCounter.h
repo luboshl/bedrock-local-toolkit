@@ -116,10 +116,10 @@ namespace fpscounter
             frames_.fetch_add(1, std::memory_order_relaxed);
         }
 
-        void Publish(HWND gameWindow, bool gameplayActive)
+        void Publish(HWND gameWindow, bool gameplayActive, bool frameSourceReady)
         {
             gameWindow_.store(gameWindow);
-            gameplayActive_.store(gameplayActive);
+            gameplayActive_.store(gameplayActive && frameSourceReady);
         }
 
         void BeginShutdown()

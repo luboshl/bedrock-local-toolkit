@@ -174,9 +174,14 @@ namespace
             }
         } scope;
         auto& counter = scope.counter;
-        Check(counter.Start(GetModuleHandleW(nullptr), config.Path()), "counter thread starts");
-        counter.Publish(gameWindow, false);
-        const ULONGLONG deadline = GetTickCount64() + 5'000;
+        static std::atomic<unsigned int> sampleReports{0};
+        sampleReports.store(0);
+        Check(counter.Start(GetModuleHandleW(nullptr), config.Path(), [](const char* event)
+        {
+            if (std::strcmp(event, "fps-sample-ready") == 0) sampleReports.fetch_add(1);
+        }), "counter thread starts");
+        counter.Publish(gameWindow, true, false);
+        const ULONGLONG deadline = GetTickCount64() + 10'000;
         while (counter.Window() == nullptr)
         {
             Check(GetTickCount64() < deadline, "counter creates its independent overlay");
@@ -187,8 +192,10 @@ namespace
             Check(GetTickCount64() < deadline, "counter thread loads its enabled-by-default setting");
             Sleep(1);
         }
-        Check(!IsWindowVisible(counter.Window()) && counter.Enabled(),
-            "enabled-by-default counter stays hidden outside gameplay");
+        const ULONGLONG noSourceDeadline = GetTickCount64() + 1'100;
+        while (GetTickCount64() < noSourceDeadline) Sleep(16);
+        Check(!IsWindowVisible(counter.Window()) && counter.Enabled() && sampleReports.load() == 0,
+            "active gameplay without a verified frame source stays hidden and never reports an FPS sample");
         config.Set(L"fps_counter", L"enabled", L"false");
         while (counter.Enabled())
         {
@@ -201,6 +208,12 @@ namespace
             Check(GetTickCount64() < deadline, "counter thread reloads enabled without restarting");
             Sleep(1);
         }
+        counter.Publish(gameWindow, true, true);
+        while (sampleReports.load() == 0)
+        {
+            Check(GetTickCount64() < deadline, "verified frame source produces a sample");
+            Sleep(16);
+        }
         counter.BeginShutdown();
         while (!counter.FinishShutdown())
         {
@@ -208,6 +221,159 @@ namespace
             Sleep(1);
         }
         Check(counter.Window() == nullptr, "counter destroys its window before shutdown completes");
+    }
+
+    struct SuspendedTestThread
+    {
+        HANDLE handle = nullptr;
+        CONTEXT initial{};
+
+        SuspendedTestThread()
+        {
+            handle = CreateThread(nullptr, 0, [](void*) -> DWORD { return 0; },
+                nullptr, CREATE_SUSPENDED, nullptr);
+            Check(handle != nullptr, "create suspended thread for instruction-pointer checks");
+            initial.ContextFlags = CONTEXT_CONTROL;
+            if (!GetThreadContext(handle, &initial))
+            {
+                ResumeThread(handle);
+                CloseHandle(handle);
+                handle = nullptr;
+                Check(false, "read suspended thread's initial context");
+            }
+        }
+
+        ~SuspendedTestThread()
+        {
+            // Synthetic instruction pointers are inspected only while suspended.
+            // Restore the native startup context so the thread exits normally.
+            if (handle != nullptr)
+            {
+                SetThreadContext(handle, &initial);
+                ResumeThread(handle);
+                WaitForSingleObject(handle, 5'000);
+                CloseHandle(handle);
+            }
+        }
+
+        void ParkAt(uintptr_t address)
+        {
+            CONTEXT context = initial;
+            context.Rip = address;
+            Check(SetThreadContext(handle, &context) != FALSE, "park thread at synthetic hook instruction");
+        }
+
+        uintptr_t InstructionPointer() const
+        {
+            CONTEXT context{};
+            context.ContextFlags = CONTEXT_CONTROL;
+            Check(GetThreadContext(handle, &context) != FALSE, "read relocated thread instruction pointer");
+            return context.Rip;
+        }
+    };
+
+    struct SyntheticFpsHook
+    {
+        unsigned char* target = nullptr;
+        bool initialized = false;
+        HMODULE previousModule = g_module;
+
+        SyntheticFpsHook()
+        {
+            try
+            {
+                Check(g_minecraftGameUpdateTarget == nullptr, "synthetic FPS hook starts without an installed hook");
+                target = static_cast<unsigned char*>(VirtualAlloc(nullptr, 4096,
+                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+                Check(target != nullptr, "allocate synthetic FPS entry");
+                std::memcpy(target, fpsprofile::kMinecraftGameUpdateEntry.data(),
+                    fpsprofile::kMinecraftGameUpdateEntry.size());
+                DWORD previousProtection = 0;
+                Check(VirtualProtect(target, 4096, PAGE_EXECUTE_READ, &previousProtection) != FALSE,
+                    "protect synthetic FPS entry");
+                FlushInstructionCache(GetCurrentProcess(), target, 4096);
+                Check(MH_Initialize() == MH_OK, "initialize local MinHook test runtime");
+                initialized = true;
+                Check(MH_CreateHook(target, reinterpret_cast<void*>(&CountMinecraftGameUpdate),
+                    reinterpret_cast<void**>(&g_originalMinecraftGameUpdate)) == MH_OK,
+                    "create real MinHook trampoline and relay for synthetic FPS entry");
+                Check(MH_EnableHook(target) == MH_OK, "enable synthetic FPS hook");
+                g_module = GetModuleHandleW(nullptr);
+                g_minecraftGameUpdateTarget = target;
+                g_minecraftGameUpdateReplacementVerified = nametag::Read(reinterpret_cast<uintptr_t>(target),
+                    g_minecraftGameUpdateReplacement.data(), g_minecraftGameUpdateReplacement.size());
+                Check(g_minecraftGameUpdateReplacementVerified, "record installed synthetic FPS patch");
+            }
+            catch (...)
+            {
+                Cleanup();
+                throw;
+            }
+        }
+
+        ~SyntheticFpsHook() { Cleanup(); }
+
+        void Cleanup()
+        {
+            if (initialized) MH_Uninitialize();
+            if (target != nullptr) VirtualFree(target, 0, MEM_RELEASE);
+            g_module = previousModule;
+            g_minecraftGameUpdateTarget = nullptr;
+            g_originalMinecraftGameUpdate = nullptr;
+            g_minecraftGameUpdateReplacementVerified = false;
+            g_minecraftGameUpdateDisabled = false;
+        }
+
+        uintptr_t Relay() const
+        {
+            Check(target[0] == 0xE9, "synthetic FPS hook uses a relative jump to the x64 relay");
+            int32_t relative = 0;
+            std::memcpy(&relative, target + 1, sizeof(relative));
+            return static_cast<uintptr_t>(reinterpret_cast<intptr_t>(target + 5) + relative);
+        }
+    };
+
+    void TestFpsHookSafety()
+    {
+        const bool supportedBuild = g_supportedBuild;
+        const uintptr_t moduleBase = g_gameModuleBase;
+        g_supportedBuild = false;
+        Check(!InstallMinecraftGameUpdateHook(), "unsupported build cannot supply FPS measurements");
+        g_supportedBuild = true;
+        g_gameModuleBase = 0;
+        Check(!InstallMinecraftGameUpdateHook(), "rejected FPS profile cannot supply FPS measurements");
+        Check(g_minecraftGameUpdateTarget == nullptr && g_originalMinecraftGameUpdate == nullptr,
+            "failed FPS installation leaves no frame source");
+        g_supportedBuild = supportedBuild;
+        g_gameModuleBase = moduleBase;
+
+        SyntheticFpsHook hook;
+        SuspendedTestThread relayThread;
+        SuspendedTestThread trampolineThread;
+        const uintptr_t target = reinterpret_cast<uintptr_t>(hook.target);
+        const uintptr_t trampoline = reinterpret_cast<uintptr_t>(g_originalMinecraftGameUpdate);
+        relayThread.ParkAt(hook.Relay());
+        trampolineThread.ParkAt(trampoline + 1); // Second profiled push instruction.
+        Check(MH_DisableHook(hook.target) == MH_OK, "disable one installed MinHook hook");
+        Check(relayThread.InstructionPointer() == target &&
+            trampolineThread.InstructionPointer() == target + 1,
+            "single-hook disable relocates both relay and trampoline instruction pointers to original code");
+        Check(nametag::Matches(target, fpsprofile::kMinecraftGameUpdateEntry.data(),
+            fpsprofile::kMinecraftGameUpdateEntry.size()), "disable restores the complete original FPS entry");
+        g_minecraftGameUpdateDisabled = true;
+
+        // Simulate an instruction pointer that disable-time relocation could not
+        // move. A zero callback count must not authorize freeing this allocation.
+        trampolineThread.ParkAt(trampoline);
+        Check(!RestoreMinecraftGameUpdateHook() && g_minecraftGameUpdateTarget == hook.target,
+            "FPS detach retains the hook while a thread is in the trampoline allocation");
+        trampolineThread.ParkAt(target);
+        InterlockedExchange(&g_fpsHookCallbacks, 1);
+        Check(!RestoreMinecraftGameUpdateHook(), "FPS detach waits for active callbacks");
+        InterlockedExchange(&g_fpsHookCallbacks, 0);
+        Check(RestoreMinecraftGameUpdateHook() && g_minecraftGameUpdateTarget == nullptr &&
+            g_originalMinecraftGameUpdate == nullptr,
+            "FPS detach releases the drained hook and clears its frame source");
     }
 
     void TestZoomTransitionInterpolation()
@@ -915,6 +1081,7 @@ int main()
         TestFpsCounterConfig();
         TestFpsCounterPresentation();
         TestFpsCounterShutdown();
+        TestFpsHookSafety();
         TestScreenInput();
         TestZoomTransitionInterpolation();
         TestZoomMouseSensitivityInterpolation();

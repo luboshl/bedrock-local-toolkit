@@ -1906,13 +1906,13 @@ namespace
         InterlockedDecrement(&g_fpsHookCallbacks);
     }
 
-    void InstallMinecraftGameUpdateHook()
+    bool InstallMinecraftGameUpdateHook()
     {
-        if (!g_supportedBuild || g_minecraftGameUpdateTarget != nullptr) return;
+        if (!g_supportedBuild || g_minecraftGameUpdateTarget != nullptr) return false;
         if (!fpsprofile::Matches(g_gameModuleBase))
         {
             LogZoomStatus("fps-update-profile-rejected");
-            return;
+            return false;
         }
         void* target = reinterpret_cast<void*>(g_gameModuleBase + fpsprofile::kMinecraftGameUpdateRva);
         MEMORY_BASIC_INFORMATION memory{};
@@ -1921,38 +1921,27 @@ namespace
             (memory.Protect & 0xFF) != PAGE_EXECUTE_READ)
         {
             LogZoomStatus("fps-update-target-rejected");
-            return;
+            return false;
         }
         const MH_STATUS initialization = MH_Initialize();
         if (initialization == MH_OK) g_minHookInitializedByUs = true;
-        if (initialization != MH_OK && initialization != MH_ERROR_ALREADY_INITIALIZED) return;
+        if (initialization != MH_OK && initialization != MH_ERROR_ALREADY_INITIALIZED) return false;
 
         const MH_STATUS created = MH_CreateHook(target, reinterpret_cast<void*>(&CountMinecraftGameUpdate),
             reinterpret_cast<void**>(&g_originalMinecraftGameUpdate));
         if (created != MH_OK)
         {
             LogZoomStatus("fps-update-hook-create-failed");
-            return;
+            return false;
         }
         if (MH_EnableHook(target) != MH_OK)
         {
-            if (nametag::Matches(reinterpret_cast<uintptr_t>(target),
-                fpsprofile::kMinecraftGameUpdateEntry.data(), fpsprofile::kMinecraftGameUpdateEntry.size()))
-            {
-                if (MH_RemoveHook(target) == MH_OK) g_originalMinecraftGameUpdate = nullptr;
-                else
-                {
-                    g_minecraftGameUpdateTarget = target;
-                    g_minecraftGameUpdateDisabled = true;
-                }
-            }
-            else
-            {
-                g_minecraftGameUpdateTarget = target;
-                g_minecraftGameUpdateDisabled = true;
-            }
+            // Enable can relocate threads before a protection failure. Retain
+            // the allocation until the normal teardown verifies it is drained.
+            g_minecraftGameUpdateTarget = target;
+            g_minecraftGameUpdateDisabled = true;
             LogZoomStatus("fps-update-hook-enable-failed");
-            return;
+            return false;
         }
         g_minecraftGameUpdateTarget = target;
         SIZE_T bytesRead = 0;
@@ -1962,6 +1951,7 @@ namespace
         if (!g_minecraftGameUpdateReplacementVerified)
             LogZoomStatus("fps-update-hook-patch-unverified");
         else LogZoomStatus("fps-counter-ready");
+        return g_minecraftGameUpdateReplacementVerified;
     }
 
     bool RestoreMinecraftGameUpdateHook()
@@ -1979,14 +1969,21 @@ namespace
             fpsprofile::kMinecraftGameUpdateEntry.size()) ||
             InterlockedCompareExchange(&g_fpsHookCallbacks, 0, 0) != 0) return false;
 
+        MEMORY_BASIC_INFORMATION trampolineMemory{};
+        if (g_originalMinecraftGameUpdate == nullptr ||
+            VirtualQuery(reinterpret_cast<void*>(g_originalMinecraftGameUpdate), &trampolineMemory,
+                sizeof(trampolineMemory)) == 0 || trampolineMemory.State != MEM_COMMIT) return false;
         const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(g_module);
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
             reinterpret_cast<uintptr_t>(g_module) + dos->e_lfanew);
         {
-            // A zero callback count can still leave a thread in the detour epilogue.
+            // The callback count excludes the relay and detour epilogue. Check
+            // both the module and the trampoline's entire committed region.
             nametag::FrozenThreads frozen;
             if (!frozen.Freeze() || !frozen.Outside(reinterpret_cast<uintptr_t>(g_module),
                 nt->OptionalHeader.SizeOfImage) ||
+                !frozen.Outside(reinterpret_cast<uintptr_t>(trampolineMemory.BaseAddress),
+                    trampolineMemory.RegionSize) ||
                 InterlockedCompareExchange(&g_fpsHookCallbacks, 0, 0) != 0) return false;
         }
         if (MH_RemoveHook(g_minecraftGameUpdateTarget) != MH_OK) return false;
@@ -3172,9 +3169,8 @@ namespace
         // Diagnostics are optional; failed startup drops logs without falling
         // back to synchronous writes on the keyboard-hook owner.
         g_diagnosticWriter.Start();
-        if (g_fpsCounter.Start(g_module, g_toolkitConfigPath,
-            [](const char* event) { LogZoomStatus(event); }))
-            InstallMinecraftGameUpdateHook();
+        const bool fpsFrameSourceReady = g_fpsCounter.Start(g_module, g_toolkitConfigPath,
+            [](const char* event) { LogZoomStatus(event); }) && InstallMinecraftGameUpdateHook();
         nametag::Initialize(g_gameModuleBase, g_supportedBuild, g_zoomConfig.showNametagWhenHudHidden);
         LogNametagStatus("initialize");
         alwaysday::Initialize(g_gameModuleBase, g_supportedBuild);
@@ -3529,7 +3525,7 @@ namespace
                     ApplyZoom(gameWindow);
                 }
             }
-            g_fpsCounter.Publish(gameWindow, active && !stopWhenRestored);
+            g_fpsCounter.Publish(gameWindow, active && !stopWhenRestored, fpsFrameSourceReady);
             UpdateZoomDiagnostics();
             WaitForWorkerInput(workerTimer, g_fovScan.result == FovScanResult::Running ||
                 (g_zoom.transitionActive && !g_zoomRestorePending) ? 1 : 16);

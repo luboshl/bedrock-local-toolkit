@@ -11,6 +11,8 @@ This document preserves findings that explain the current design or prevent fail
 
 ## Reference Profile for the Supported Build
 
+Minecraft exposes the named sensitivity option as a normalized `0.0`–`1.0` value; `MouseSensitivity` in the INI uses the equivalent `0`–`100` slider scale. Convert the configured percentage to a normalized option value, then interpolate the value from the verified live setting at the original FOV to that target at the minimum Zoom FOV.
+
 The following addresses are only a reference map for comparison with the current source profile and troubleshooting the exact `1.26.5203.0` x64 build. They are not a stable interface or instructions for use with another version. The PE profile in code has timestamp `0x6AB54E37` and image size `0x12C01000`; the target is rejected on any mismatch.
 
 - **FOV and sensitivity:** `GameMod\FovDiscovery.h` contains the vtable RVAs and semantic checks for named game options. Sensitivity is a `FloatOption` with key `ctrl_sensitivity2`, name `sensitivity`, and label `options.sensitivity`; the verified live value is the wrapper at `+0x18`. The previously tested `Options+0x1BF4` and candidate `0x2D44` were not the correct target.

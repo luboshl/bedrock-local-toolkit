@@ -197,6 +197,7 @@ namespace
         bool active = false;
         uintptr_t optionsSlotAddress = 0;
         bool bindingLost = false;
+        bool targetInvalidated = false;
     };
 
     struct FovPointerConfig
@@ -570,7 +571,13 @@ namespace
     }
 
     bool SameFloatBits(float left, float right);
-    bool ReadTrackedZoomMouseSensitivity(float& value);
+    enum class TrackedSensitivityValidation
+    {
+        Valid,
+        Invalidated,
+        RetryableFailure
+    };
+    TrackedSensitivityValidation ReadTrackedZoomMouseSensitivity(float& value);
     bool CompareExchangeFloat(uintptr_t address, float expected, float replacement);
     void LogZoomStatus(const char* event);
 
@@ -579,10 +586,19 @@ namespace
         if (!g_zoomSensitivity.active || g_zoomSensitivity.bindingLost) return;
 
         float currentValue = 0.0f;
-        if (!ReadTrackedZoomMouseSensitivity(currentValue))
+        const TrackedSensitivityValidation validation = ReadTrackedZoomMouseSensitivity(currentValue);
+        if (validation != TrackedSensitivityValidation::Valid)
         {
-            LogZoomStatus(g_zoomSensitivity.bindingLost ? "mouse-sensitivity-options-binding-changed" :
-                "mouse-sensitivity-update-validation-failed");
+            if (g_zoomSensitivity.bindingLost)
+                LogZoomStatus("mouse-sensitivity-options-binding-changed");
+            else if (validation == TrackedSensitivityValidation::Invalidated)
+            {
+                g_zoomSensitivity.bindingLost = true;
+                g_zoomSensitivity.targetInvalidated = true;
+                LogZoomStatus("mouse-sensitivity-target-invalidated");
+            }
+            else
+                LogZoomStatus("mouse-sensitivity-update-validation-failed");
             return;
         }
         if (!SameFloatBits(currentValue, g_zoomSensitivity.zoomValue))
@@ -703,33 +719,45 @@ namespace
         return leftBits == rightBits;
     }
 
-    bool ReadTrackedZoomMouseSensitivityWrapper(float& value)
+    TrackedSensitivityValidation ReadTrackedZoomMouseSensitivityWrapper(float& value)
     {
         if (!g_zoomSensitivity.active || g_zoomSensitivity.valueAddress <
-            fov::kPatternOffset + 2 * sizeof(float)) return false;
+            fov::kPatternOffset + 2 * sizeof(float)) return TrackedSensitivityValidation::Invalidated;
         const uintptr_t wrapper = g_zoomSensitivity.valueAddress - fov::kPatternOffset - 2 * sizeof(float);
+
+        MEMORY_BASIC_INFORMATION memory{};
+        if (VirtualQuery(reinterpret_cast<const void*>(wrapper), &memory, sizeof(memory)) == 0 ||
+            memory.State != MEM_COMMIT || memory.Type != MEM_PRIVATE)
+            return TrackedSensitivityValidation::Invalidated;
+        if ((memory.Protect & 0xFF) != PAGE_READWRITE ||
+            (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+            return TrackedSensitivityValidation::RetryableFailure;
+
         uintptr_t header[2]{};
-        if (!ReadPrivateMemory(wrapper, header, sizeof(header)) ||
-            header[0] != g_gameModuleBase + fov::kMouseSensitivityVtableRva ||
-            header[1] != g_zoomSensitivity.owner || header[1] == 0 ||
-            (header[1] & 7) != 0 || header[1] > (std::numeric_limits<uintptr_t>::max)() - 0x200 ||
-            !MatchOptionString(header[1] + fov::kKeyOffset, "ctrl_sensitivity2", sizeof("ctrl_sensitivity2") - 1) ||
+        if (!ReadPrivateMemory(wrapper, header, sizeof(header)))
+            return TrackedSensitivityValidation::RetryableFailure;
+        if (header[0] != g_gameModuleBase + fov::kMouseSensitivityVtableRva ||
+            header[1] != g_zoomSensitivity.owner || header[1] == 0 || (header[1] & 7) != 0 ||
+            header[1] > (std::numeric_limits<uintptr_t>::max)() - 0x200)
+            return TrackedSensitivityValidation::Invalidated;
+        if (!MatchOptionString(header[1] + fov::kKeyOffset, "ctrl_sensitivity2", sizeof("ctrl_sensitivity2") - 1) ||
             !MatchOptionString(header[1] + fov::kDisplayNameOffset, "sensitivity", sizeof("sensitivity") - 1) ||
             !MatchOptionString(header[1] + fov::kCaptionOffset, "options.sensitivity", sizeof("options.sensitivity") - 1))
-            return false;
+            return TrackedSensitivityValidation::RetryableFailure;
 
         float values[4]{};
-        if (!ReadPrivateMemory(wrapper + fov::kPatternOffset, values, sizeof(values)) ||
-            !std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2]) ||
+        if (!ReadPrivateMemory(wrapper + fov::kPatternOffset, values, sizeof(values)))
+            return TrackedSensitivityValidation::RetryableFailure;
+        if (!std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2]) ||
             std::fabs(values[0] - 0.0f) >= kFovMatchTolerance ||
             std::fabs(values[1] - 1.0f) >= kFovMatchTolerance ||
             values[2] < kMouseSensitivityRuntimeMinimum || values[2] > kMouseSensitivityRuntimeMaximum)
-            return false;
+            return TrackedSensitivityValidation::Invalidated;
         value = values[2];
-        return true;
+        return TrackedSensitivityValidation::Valid;
     }
 
-    bool ReadTrackedZoomMouseSensitivity(float& value)
+    TrackedSensitivityValidation ReadTrackedZoomMouseSensitivity(float& value)
     {
         if (!g_zoomSensitivity.active || g_zoomSensitivity.bindingLost ||
             g_zoomSensitivity.target.options == 0 || g_zoomSensitivity.optionsSlotAddress <
@@ -739,20 +767,20 @@ namespace
             g_zoomSensitivity.optionsSlotAddress >= g_zoomSensitivity.target.options + fov::kOptionsSearchBytes ||
             g_zoomSensitivity.optionsSlotAddress % alignof(uintptr_t) != 0 ||
             g_zoomSensitivity.valueAddress < fov::kPatternOffset + 2 * sizeof(float))
-            return false;
+            return TrackedSensitivityValidation::Invalidated;
 
         uintptr_t optionsVtable = 0;
         uintptr_t wrapper = 0;
         if (!ReadPrivateMemory(g_zoomSensitivity.target.options, &optionsVtable, sizeof(optionsVtable)) ||
             optionsVtable != g_gameModuleBase + fov::kOptionsVtableRva ||
             !ReadPrivateMemory(g_zoomSensitivity.optionsSlotAddress, &wrapper, sizeof(wrapper)))
-            return false;
+            return TrackedSensitivityValidation::RetryableFailure;
 
         const uintptr_t trackedWrapper = g_zoomSensitivity.valueAddress - fov::kPatternOffset - 2 * sizeof(float);
         if (wrapper != trackedWrapper)
         {
             g_zoomSensitivity.bindingLost = true;
-            return false;
+            return TrackedSensitivityValidation::Invalidated;
         }
         return ReadTrackedZoomMouseSensitivityWrapper(value);
     }
@@ -793,11 +821,28 @@ namespace
             }
         }
 
+        if (g_zoomSensitivity.targetInvalidated)
+        {
+            g_zoomSensitivity.active = false;
+            LogZoomStatus("mouse-sensitivity-target-invalidated-after-rebind");
+            return SensitivityRestoreResult::ValueChanged;
+        }
+
         if (!g_zoomSensitivity.bindingLost)
         {
-            if (!ReadTrackedZoomMouseSensitivity(currentValue))
+            const TrackedSensitivityValidation validation = ReadTrackedZoomMouseSensitivity(currentValue);
+            if (validation != TrackedSensitivityValidation::Valid)
             {
-                if (!g_zoomSensitivity.bindingLost) return SensitivityRestoreResult::Failed;
+                if (!g_zoomSensitivity.bindingLost)
+                {
+                    if (validation == TrackedSensitivityValidation::Invalidated)
+                    {
+                        g_zoomSensitivity.active = false;
+                        LogZoomStatus("mouse-sensitivity-target-invalidated");
+                        return SensitivityRestoreResult::ValueChanged;
+                    }
+                    return SensitivityRestoreResult::Failed;
+                }
             }
             else
             {
@@ -811,7 +856,15 @@ namespace
             }
         }
 
-        if (!ReadTrackedZoomMouseSensitivityWrapper(currentValue))
+        const TrackedSensitivityValidation detachedValidation =
+            ReadTrackedZoomMouseSensitivityWrapper(currentValue);
+        if (detachedValidation == TrackedSensitivityValidation::Invalidated)
+        {
+            g_zoomSensitivity.active = false;
+            LogZoomStatus("mouse-sensitivity-target-invalidated-after-rebind");
+            return SensitivityRestoreResult::ValueChanged;
+        }
+        if (detachedValidation == TrackedSensitivityValidation::RetryableFailure)
             return SensitivityRestoreResult::Failed;
         const SensitivityRestoreResult result = RestoreZoomSensitivityValue(g_zoomSensitivity.valueAddress,
             g_zoomSensitivity.originalValue, g_zoomSensitivity.zoomValue);

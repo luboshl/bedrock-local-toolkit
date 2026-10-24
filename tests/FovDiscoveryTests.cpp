@@ -667,6 +667,82 @@ namespace
         g_zoomSensitivity = {};
     }
 
+    void TestZoomSensitivityInvalidatedDetachedTargetRetiresRestore()
+    {
+        {
+            Fixture fixture;
+            fixture.AddSensitivity();
+            g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
+                0.50f, 0.12f, true};
+            g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+            std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &g_zoomSensitivity.zoomValue,
+                sizeof(g_zoomSensitivity.zoomValue));
+            fixture.ReplaceSensitivityOptionBinding();
+            UpdateZoomMouseSensitivityForFov(1.0f);
+            fixture.SetSensitivityOwner(0x2800);
+
+            g_zoom.active = true;
+            g_zoomRestorePending = true;
+            Check(CompleteZoomRestore(FovRestoreResult::Restored) == FovRestoreResult::ValueChanged &&
+                !g_zoom.active && !g_zoomRestorePending && !g_zoomSensitivity.active,
+                "changed owner retires an invalidated detached target and completes Zoom restoration");
+            g_zoom = {};
+            g_zoomRestorePending = false;
+        }
+
+        {
+            Fixture fixture;
+            fixture.AddSensitivity();
+            g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
+                0.50f, 0.12f, true};
+            g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+            std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &g_zoomSensitivity.zoomValue,
+                sizeof(g_zoomSensitivity.zoomValue));
+            fixture.ReplaceSensitivityOptionBinding();
+            UpdateZoomMouseSensitivityForFov(1.0f);
+            Check(VirtualFree(fixture.memory + 0x2000, 0x1000, MEM_DECOMMIT) != FALSE,
+                "decommit the detached sensitivity wrapper");
+
+            g_zoom.active = true;
+            g_zoomRestorePending = true;
+            Check(CompleteZoomRestore(FovRestoreResult::Restored) == FovRestoreResult::ValueChanged &&
+                !g_zoom.active && !g_zoomRestorePending && !g_zoomSensitivity.active,
+                "freed detached wrapper retires tracking instead of blocking Zoom restoration");
+            g_zoom = {};
+            g_zoomRestorePending = false;
+        }
+
+        {
+            Fixture fixture;
+            fixture.AddSensitivity();
+            g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
+                0.50f, 0.12f, true};
+            g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+            std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &g_zoomSensitivity.zoomValue,
+                sizeof(g_zoomSensitivity.zoomValue));
+            fixture.ReplaceSensitivityOptionBinding();
+            UpdateZoomMouseSensitivityForFov(1.0f);
+
+            DWORD previousProtection = 0;
+            Check(VirtualProtect(fixture.memory + 0x2000, 0x1000, PAGE_NOACCESS, &previousProtection) != FALSE,
+                "temporarily block access to the detached wrapper");
+            g_zoom.active = true;
+            g_zoomRestorePending = true;
+            Check(CompleteZoomRestore(FovRestoreResult::Restored) == FovRestoreResult::Failed &&
+                g_zoom.active && g_zoomRestorePending && g_zoomSensitivity.active,
+                "temporary access failure keeps detached sensitivity restoration retryable");
+
+            DWORD ignoredProtection = 0;
+            Check(VirtualProtect(fixture.memory + 0x2000, 0x1000, previousProtection, &ignoredProtection) != FALSE,
+                "restore access to the detached wrapper");
+            Check(CompleteZoomRestore(FovRestoreResult::Restored) == FovRestoreResult::Restored &&
+                !g_zoom.active && !g_zoomRestorePending && !g_zoomSensitivity.active,
+                "restoration retries successfully after temporary access returns");
+            g_zoom = {};
+            g_zoomRestorePending = false;
+        }
+    }
+
     void TestZoomSensitivityRestorationWhenFovIsUnreadable()
     {
         Fixture fixture;
@@ -863,6 +939,7 @@ int main()
         TestZoomSensitivityRestorationAfterFovReplacement();
         TestZoomSensitivityOwnerReplacementPreserved();
         TestZoomSensitivityOptionsBindingReplacementStopsUpdates();
+        TestZoomSensitivityInvalidatedDetachedTargetRetiresRestore();
         TestZoomSensitivityRestorationWhenFovIsUnreadable();
         TestDeferredZoomDiagnostics();
         TestBlockedDiagnosticWriter();

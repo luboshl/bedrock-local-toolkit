@@ -739,7 +739,8 @@ static MH_STATUS EnableHook(LPVOID pTarget, BOOL enable)
                 if (g_hooks.pItems[pos].isEnabled != enable)
                 {
                     FROZEN_THREADS threads;
-                    status = Freeze(&threads, pos, ACTION_ENABLE);
+                    // Disabling must relocate suspended threads out of the relay/trampoline.
+                    status = Freeze(&threads, pos, enable ? ACTION_ENABLE : ACTION_DISABLE);
                     if (status == MH_OK)
                     {
                         status = EnableHookLL(pos, enable);

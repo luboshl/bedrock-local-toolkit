@@ -58,6 +58,7 @@ Previous fixes for hotbar scrolling and false camera movement were verified in a
 
 - Before installation, verify the expected original bytes and page protection. Prepare and restore multiple related patches in a coordinated way; if another party has changed the code, refuse to overwrite it.
 - Before freeing a bridge, prevent new callbacks, wait for those already running, and check that no game thread is executing instructions in the bridge. If restoration fails, the module must remain loaded to prevent execution from freed memory.
+- MinHook's single-hook disable path must freeze threads with `ACTION_DISABLE` so instruction pointers in its relay/trampoline move back to the original function. The FPS teardown also checks the trampoline's entire committed region after disabling; a zero callback count alone cannot prove that region is unused.
 - Isolated tests can execute the actual emitted x64 bridges on synthetic pages and verify the ABI, registers, flags, and restoration. They do not replace checking behavior in a real process or visually verifying the game.
 - A prepared profile, installed hook, or increasing diagnostic counter does not by itself prove correct behavior. Always distinguish profile rejection, an executed callback, a passing test, and a confirmed in-game result.
 

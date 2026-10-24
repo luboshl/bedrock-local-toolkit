@@ -95,55 +95,63 @@ namespace
         Check(!LoadZoomConfigFromPath(config.Path()), "duplicate shortcuts rejected");
     }
 
-    void TestFovCounterConfig()
+    void TestFpsCounterConfig()
     {
         TemporaryToolkitConfig config;
-        Check(!fovcounter::LoadEnabled(config.Path()), "FOV counter is disabled by default");
-        config.Set(L"FOV_COUNTER", L"ENABLED", L" TrUe ");
-        Check(fovcounter::LoadEnabled(config.Path()), "FOV counter accepts case and surrounding whitespace");
-        config.Set(L"fov_counter", L"enabled", L"false");
-        Check(!fovcounter::LoadEnabled(config.Path()), "live counter config disables without module reload");
-        config.Set(L"fov_counter", L"enabled", L"true");
+        Check(fpscounter::LoadEnabled(config.Path()), "FPS counter is enabled by default");
+        Check(fpscounter::LoadFontSize(config.Path()) == fpscounter::kDefaultFontSize,
+            "FPS font size has a readable default");
+        config.Set(L"FPS_COUNTER", L"ENABLED", L" false ");
+        Check(!fpscounter::LoadEnabled(config.Path()), "FPS counter accepts case and surrounding whitespace");
+        config.Set(L"fps_counter", L"enabled", L"true");
+        config.Set(L"fps_counter", L"font_size", L"36");
         config.Set(L"Zoom", L"FirstPersonFov", L"invalid");
         const ZoomConfig original = g_zoomConfig;
-        Check(fovcounter::LoadEnabled(config.Path()) &&
+        Check(fpscounter::LoadEnabled(config.Path()) && fpscounter::LoadFontSize(config.Path()) == 36 &&
             g_zoomConfig.firstPersonFov == original.firstPersonFov &&
             g_zoomConfig.zoomKey == original.zoomKey,
-            "live counter config is independent of restart-only Zoom and shortcut settings");
+            "live FPS settings are independent of restart-only Zoom and shortcut settings");
+        config.Set(L"fps_counter", L"font_size", L"12");
+        Check(fpscounter::LoadFontSize(config.Path()) == 12, "FPS font size accepts its minimum");
+        config.Set(L"fps_counter", L"font_size", L"48");
+        Check(fpscounter::LoadFontSize(config.Path()) == 48, "FPS font size accepts its maximum");
+        for (const wchar_t* invalid : {L"", L"11", L"49", L"36px", L"invalid"})
+        {
+            config.Set(L"fps_counter", L"font_size", invalid);
+            Check(fpscounter::LoadFontSize(config.Path()) == fpscounter::kDefaultFontSize,
+                "invalid FPS font size uses the default");
+        }
         for (const wchar_t* invalid : {L"", L"yes", L"1", L"true-but-truncated", L"invalid"})
         {
-            config.Set(L"fov_counter", L"enabled", invalid);
-            Check(!fovcounter::LoadEnabled(config.Path()), "invalid counter boolean fails closed");
+            config.Set(L"fps_counter", L"enabled", invalid);
+            Check(!fpscounter::LoadEnabled(config.Path()), "invalid FPS counter boolean fails closed");
         }
-        config.Set(L"fov_counter", L"enabled", nullptr);
-        Check(!fovcounter::LoadEnabled(config.Path()), "removed counter setting disables the counter");
+        config.Set(L"fps_counter", L"enabled", nullptr);
+        Check(fpscounter::LoadEnabled(config.Path()), "removed FPS counter setting uses the enabled default");
     }
 
-    void TestFovCounterPresentation()
+    void TestFpsCounterPresentation()
     {
-        Check(fovcounter::DisplayValue(70.0f) == 70 &&
-            fovcounter::DisplayValue(42.5f) == 43 &&
-            fovcounter::DisplayValue(1.0f) == 1 && fovcounter::DisplayValue(120.0f) == 120,
-            "counter rounds valid live values to the nearest degree");
-        for (const float value : {0.0f, 121.0f, (std::numeric_limits<float>::infinity)(),
-            (std::numeric_limits<float>::quiet_NaN)()})
-            Check(fovcounter::DisplayValue(value) == -1, "counter rejects invalid FOVs");
-        const RECT panel = fovcounter::PanelRect({-1920, 100, 0, 1180}, 100, 32);
+        Check(fpscounter::FpsValue(60, 1000) == 60 && fpscounter::FpsValue(30, 1000) == 30 &&
+            fpscounter::FpsValue(1, 50) == 20 && fpscounter::FpsValue(1, 0) == -1 &&
+            fpscounter::FpsValue(2000, 1000) == 1000,
+            "FPS measurement uses elapsed time and clamps implausibly high values");
+        const RECT panel = fpscounter::PanelRect({-1920, 100, 0, 1180}, 100, 32);
         Check(panel.left == -1912 && panel.bottom == 1172 && panel.right == -1812 && panel.top == 1140,
-            "counter anchors to the game client's bottom-left, including other monitors");
-        Check(fovcounter::Pixel(0) == 0xA6000000 && fovcounter::Pixel(255) == 0xFFFFFFFF,
+            "FPS counter anchors to the game client's bottom-left, including other monitors");
+        Check(fpscounter::Pixel(0) == 0xA6000000 && fpscounter::Pixel(255) == 0xFFFFFFFF,
             "background has 65 percent opacity without fading the white text");
-        const uint32_t pixel = fovcounter::Pixel(128);
+        const uint32_t pixel = fpscounter::Pixel(128);
         Check((pixel >> 24) >= (pixel & 0xFF), "text edge pixels use premultiplied alpha");
     }
 
-    void TestFovCounterShutdown()
+    void TestFpsCounterShutdown()
     {
         TemporaryToolkitConfig config;
-        HWND gameWindow = CreateWindowExW(0, L"STATIC", L"FOV counter test game", WS_OVERLAPPED,
+        HWND gameWindow = CreateWindowExW(0, L"STATIC", L"FPS counter test game", WS_OVERLAPPED,
             0, 0, 640, 480, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Check(gameWindow != nullptr, "counter test creates a target window for its DPI context");
-        HWND foregroundWindow = CreateWindowExW(0, L"STATIC", L"FOV counter test foreground",
+        HWND foregroundWindow = CreateWindowExW(0, L"STATIC", L"FPS counter test foreground",
             WS_OVERLAPPED, 0, 0, 320, 240, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Check(foregroundWindow != nullptr, "counter test creates a separate foreground window");
         struct WindowScope
@@ -152,13 +160,13 @@ namespace
             ~WindowScope() { if (window != nullptr) DestroyWindow(window); }
         } windowScope{ gameWindow };
         WindowScope foregroundWindowScope{ foregroundWindow };
-        Check(fovcounter::IsGameForegroundWindow(foregroundWindow, gameWindow),
+        Check(fpscounter::IsGameForegroundWindow(foregroundWindow, gameWindow),
             "foreground windows owned by the game process keep the counter visible");
-        Check(!fovcounter::IsGameForegroundWindow(nullptr, gameWindow),
+        Check(!fpscounter::IsGameForegroundWindow(nullptr, gameWindow),
             "counter hides when no foreground window exists");
         struct CounterScope
         {
-            fovcounter::Counter counter;
+            fpscounter::Counter counter;
             ~CounterScope()
             {
                 counter.BeginShutdown();
@@ -166,27 +174,45 @@ namespace
             }
         } scope;
         auto& counter = scope.counter;
-        Check(counter.Start(GetModuleHandleW(nullptr), config.Path()), "counter thread starts");
-        counter.Publish(gameWindow, -1);
-        const ULONGLONG deadline = GetTickCount64() + 5'000;
+        static std::atomic<unsigned int> sampleReports{0};
+        sampleReports.store(0);
+        Check(counter.Start(GetModuleHandleW(nullptr), config.Path(), [](const char* event)
+        {
+            if (std::strcmp(event, "fps-sample-ready") == 0) sampleReports.fetch_add(1);
+        }), "counter thread starts");
+        counter.Publish(gameWindow, true, false);
+        const ULONGLONG deadline = GetTickCount64() + 10'000;
         while (counter.Window() == nullptr)
         {
             Check(GetTickCount64() < deadline, "counter creates its independent overlay");
             Sleep(1);
         }
-        Check(!IsWindowVisible(counter.Window()) && !counter.Enabled(),
-            "default counter stays hidden independently of the status indicator");
-        config.Set(L"fov_counter", L"enabled", L"true");
+        while (!counter.Enabled())
+        {
+            Check(GetTickCount64() < deadline, "counter thread loads its enabled-by-default setting");
+            Sleep(1);
+        }
+        const ULONGLONG noSourceDeadline = GetTickCount64() + 1'100;
+        while (GetTickCount64() < noSourceDeadline) Sleep(16);
+        Check(!IsWindowVisible(counter.Window()) && counter.Enabled() && sampleReports.load() == 0,
+            "active gameplay without a verified frame source stays hidden and never reports an FPS sample");
+        config.Set(L"fps_counter", L"enabled", L"false");
+        while (counter.Enabled())
+        {
+            Check(GetTickCount64() < deadline, "counter thread reloads disabled without restarting");
+            Sleep(1);
+        }
+        config.Set(L"fps_counter", L"enabled", L"true");
         while (!counter.Enabled())
         {
             Check(GetTickCount64() < deadline, "counter thread reloads enabled without restarting");
             Sleep(1);
         }
-        config.Set(L"fov_counter", L"enabled", L"false");
-        while (counter.Enabled())
+        counter.Publish(gameWindow, true, true);
+        while (sampleReports.load() == 0)
         {
-            Check(GetTickCount64() < deadline, "counter thread reloads disabled without restarting");
-            Sleep(1);
+            Check(GetTickCount64() < deadline, "verified frame source produces a sample");
+            Sleep(16);
         }
         counter.BeginShutdown();
         while (!counter.FinishShutdown())
@@ -195,6 +221,159 @@ namespace
             Sleep(1);
         }
         Check(counter.Window() == nullptr, "counter destroys its window before shutdown completes");
+    }
+
+    struct SuspendedTestThread
+    {
+        HANDLE handle = nullptr;
+        CONTEXT initial{};
+
+        SuspendedTestThread()
+        {
+            handle = CreateThread(nullptr, 0, [](void*) -> DWORD { return 0; },
+                nullptr, CREATE_SUSPENDED, nullptr);
+            Check(handle != nullptr, "create suspended thread for instruction-pointer checks");
+            initial.ContextFlags = CONTEXT_CONTROL;
+            if (!GetThreadContext(handle, &initial))
+            {
+                ResumeThread(handle);
+                CloseHandle(handle);
+                handle = nullptr;
+                Check(false, "read suspended thread's initial context");
+            }
+        }
+
+        ~SuspendedTestThread()
+        {
+            // Synthetic instruction pointers are inspected only while suspended.
+            // Restore the native startup context so the thread exits normally.
+            if (handle != nullptr)
+            {
+                SetThreadContext(handle, &initial);
+                ResumeThread(handle);
+                WaitForSingleObject(handle, 5'000);
+                CloseHandle(handle);
+            }
+        }
+
+        void ParkAt(uintptr_t address)
+        {
+            CONTEXT context = initial;
+            context.Rip = address;
+            Check(SetThreadContext(handle, &context) != FALSE, "park thread at synthetic hook instruction");
+        }
+
+        uintptr_t InstructionPointer() const
+        {
+            CONTEXT context{};
+            context.ContextFlags = CONTEXT_CONTROL;
+            Check(GetThreadContext(handle, &context) != FALSE, "read relocated thread instruction pointer");
+            return context.Rip;
+        }
+    };
+
+    struct SyntheticFpsHook
+    {
+        unsigned char* target = nullptr;
+        bool initialized = false;
+        HMODULE previousModule = g_module;
+
+        SyntheticFpsHook()
+        {
+            try
+            {
+                Check(g_minecraftGameUpdateTarget == nullptr, "synthetic FPS hook starts without an installed hook");
+                target = static_cast<unsigned char*>(VirtualAlloc(nullptr, 4096,
+                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+                Check(target != nullptr, "allocate synthetic FPS entry");
+                std::memcpy(target, fpsprofile::kMinecraftGameUpdateEntry.data(),
+                    fpsprofile::kMinecraftGameUpdateEntry.size());
+                DWORD previousProtection = 0;
+                Check(VirtualProtect(target, 4096, PAGE_EXECUTE_READ, &previousProtection) != FALSE,
+                    "protect synthetic FPS entry");
+                FlushInstructionCache(GetCurrentProcess(), target, 4096);
+                Check(MH_Initialize() == MH_OK, "initialize local MinHook test runtime");
+                initialized = true;
+                Check(MH_CreateHook(target, reinterpret_cast<void*>(&CountMinecraftGameUpdate),
+                    reinterpret_cast<void**>(&g_originalMinecraftGameUpdate)) == MH_OK,
+                    "create real MinHook trampoline and relay for synthetic FPS entry");
+                Check(MH_EnableHook(target) == MH_OK, "enable synthetic FPS hook");
+                g_module = GetModuleHandleW(nullptr);
+                g_minecraftGameUpdateTarget = target;
+                g_minecraftGameUpdateReplacementVerified = nametag::Read(reinterpret_cast<uintptr_t>(target),
+                    g_minecraftGameUpdateReplacement.data(), g_minecraftGameUpdateReplacement.size());
+                Check(g_minecraftGameUpdateReplacementVerified, "record installed synthetic FPS patch");
+            }
+            catch (...)
+            {
+                Cleanup();
+                throw;
+            }
+        }
+
+        ~SyntheticFpsHook() { Cleanup(); }
+
+        void Cleanup()
+        {
+            if (initialized) MH_Uninitialize();
+            if (target != nullptr) VirtualFree(target, 0, MEM_RELEASE);
+            g_module = previousModule;
+            g_minecraftGameUpdateTarget = nullptr;
+            g_originalMinecraftGameUpdate = nullptr;
+            g_minecraftGameUpdateReplacementVerified = false;
+            g_minecraftGameUpdateDisabled = false;
+        }
+
+        uintptr_t Relay() const
+        {
+            Check(target[0] == 0xE9, "synthetic FPS hook uses a relative jump to the x64 relay");
+            int32_t relative = 0;
+            std::memcpy(&relative, target + 1, sizeof(relative));
+            return static_cast<uintptr_t>(reinterpret_cast<intptr_t>(target + 5) + relative);
+        }
+    };
+
+    void TestFpsHookSafety()
+    {
+        const bool supportedBuild = g_supportedBuild;
+        const uintptr_t moduleBase = g_gameModuleBase;
+        g_supportedBuild = false;
+        Check(!InstallMinecraftGameUpdateHook(), "unsupported build cannot supply FPS measurements");
+        g_supportedBuild = true;
+        g_gameModuleBase = 0;
+        Check(!InstallMinecraftGameUpdateHook(), "rejected FPS profile cannot supply FPS measurements");
+        Check(g_minecraftGameUpdateTarget == nullptr && g_originalMinecraftGameUpdate == nullptr,
+            "failed FPS installation leaves no frame source");
+        g_supportedBuild = supportedBuild;
+        g_gameModuleBase = moduleBase;
+
+        SyntheticFpsHook hook;
+        SuspendedTestThread relayThread;
+        SuspendedTestThread trampolineThread;
+        const uintptr_t target = reinterpret_cast<uintptr_t>(hook.target);
+        const uintptr_t trampoline = reinterpret_cast<uintptr_t>(g_originalMinecraftGameUpdate);
+        relayThread.ParkAt(hook.Relay());
+        trampolineThread.ParkAt(trampoline + 1); // Second profiled push instruction.
+        Check(MH_DisableHook(hook.target) == MH_OK, "disable one installed MinHook hook");
+        Check(relayThread.InstructionPointer() == target &&
+            trampolineThread.InstructionPointer() == target + 1,
+            "single-hook disable relocates both relay and trampoline instruction pointers to original code");
+        Check(nametag::Matches(target, fpsprofile::kMinecraftGameUpdateEntry.data(),
+            fpsprofile::kMinecraftGameUpdateEntry.size()), "disable restores the complete original FPS entry");
+        g_minecraftGameUpdateDisabled = true;
+
+        // Simulate an instruction pointer that disable-time relocation could not
+        // move. A zero callback count must not authorize freeing this allocation.
+        trampolineThread.ParkAt(trampoline);
+        Check(!RestoreMinecraftGameUpdateHook() && g_minecraftGameUpdateTarget == hook.target,
+            "FPS detach retains the hook while a thread is in the trampoline allocation");
+        trampolineThread.ParkAt(target);
+        InterlockedExchange(&g_fpsHookCallbacks, 1);
+        Check(!RestoreMinecraftGameUpdateHook(), "FPS detach waits for active callbacks");
+        InterlockedExchange(&g_fpsHookCallbacks, 0);
+        Check(RestoreMinecraftGameUpdateHook() && g_minecraftGameUpdateTarget == nullptr &&
+            g_originalMinecraftGameUpdate == nullptr,
+            "FPS detach releases the drained hook and clears its frame source");
     }
 
     void TestZoomTransitionInterpolation()
@@ -828,35 +1007,6 @@ namespace
         g_zoomRestorePending = false;
     }
 
-    void TestFovCounterLiveValue()
-    {
-        Fixture fixture;
-        g_fovScan.result = FovScanResult::Unique;
-        g_fovScan.foundTarget = fixture.target;
-        Check(ReadFovCounterValue() == 70, "counter reads the verified live FOV");
-        fixture.Value(85.0f);
-        Check(ReadFovCounterValue() == 85, "counter follows in-game FOV setting changes");
-        const float minimum = 1.0f;
-        std::memcpy(fixture.memory + 1040, &minimum, sizeof(minimum));
-        fixture.Value(15.0f);
-        Check(ReadFovCounterValue() == 15, "counter follows live Zoom rather than its configured target");
-        fixture.Value(42.5f);
-        Check(ReadFovCounterValue() == 43, "counter follows intermediate Zoom transition values");
-        g_fovScan.foundTarget.owner = 0;
-        Check(ReadFovCounterValue() == -1, "counter hides on changed target identity");
-        g_fovScan.foundTarget = fixture.target;
-        fixture.Value((std::numeric_limits<float>::quiet_NaN)());
-        Check(ReadFovCounterValue() == -1, "counter hides on unreadable or invalid live FOV");
-        g_fovScan.result = FovScanResult::Multiple;
-        fixture.Value(70.0f);
-        Check(ReadFovCounterValue() == -1, "ambiguous discovery cannot display a guessed FOV");
-        g_fovScan.result = FovScanResult::Unique;
-        g_supportedBuild = false;
-        Check(ReadFovCounterValue() == -1, "counter refuses an unsupported build");
-        g_supportedBuild = true;
-        g_fovScan = {};
-    }
-
     void TestZoomTransitionTiming()
     {
         Fixture fixture;
@@ -928,10 +1078,10 @@ int main()
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
         TestToolkitConfig();
-        TestFovCounterConfig();
-        TestFovCounterPresentation();
-        TestFovCounterShutdown();
-        TestFovCounterLiveValue();
+        TestFpsCounterConfig();
+        TestFpsCounterPresentation();
+        TestFpsCounterShutdown();
+        TestFpsHookSafety();
         TestScreenInput();
         TestZoomTransitionInterpolation();
         TestZoomMouseSensitivityInterpolation();

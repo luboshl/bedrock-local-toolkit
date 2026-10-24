@@ -28,7 +28,7 @@ internal static class Program
     private sealed record ZoomConfig(float FirstPersonFov, float ThirdPersonFov,
         uint TransitionDurationMs, float MouseSensitivity,
         string Zoom, string Nametag, string AlwaysDay, string FullBright, string StatusIndicator, string SafeDetach,
-        bool ShowNametagWhenHudHidden, bool ShowFovCounter);
+        bool ShowNametagWhenHudHidden, bool ShowFpsCounter);
 
     private static int Main()
     {
@@ -42,7 +42,7 @@ internal static class Program
                 $"third-person {zoomConfig.ThirdPersonFov}, transition {zoomConfig.TransitionDurationMs} ms, " +
                 $"sensitivity {zoomConfig.MouseSensitivity}; Zoom {zoomConfig.Zoom}, Nametag {zoomConfig.Nametag}, Always day {zoomConfig.AlwaysDay}, Full Bright {zoomConfig.FullBright}, " +
                 $"indicator {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}; " +
-                $"show nametag when HUD hidden {zoomConfig.ShowNametagWhenHudHidden}; FOV counter {zoomConfig.ShowFovCounter}.");
+                $"show nametag when HUD hidden {zoomConfig.ShowNametagWhenHudHidden}; FPS counter {zoomConfig.ShowFpsCounter}.");
 
             var target = WaitForSupportedGame(TimeSpan.FromSeconds(90));
             Console.WriteLine($"Verified target: PID {target.ProcessId}, {target.PackageFullName}, x64.");
@@ -98,13 +98,13 @@ internal static class Program
 
     private static ZoomConfig LoadZoomConfig(string path)
     {
-        var defaults = new ZoomConfig(25f, 29f, 75, 45f, "T", "F7", "F6", "F8", "F9", "F10", true, false);
+        var defaults = new ZoomConfig(25f, 29f, 75, 45f, "T", "F7", "F6", "F8", "F9", "F10", true, true);
         if (!File.Exists(path)) return defaults;
 
         var zoomValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var shortcutValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var nametagValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var fovCounterValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var fpsCounterValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         Dictionary<string, string>? sectionValues = null;
         foreach (var rawLine in File.ReadLines(path))
         {
@@ -116,7 +116,7 @@ internal static class Program
                 sectionValues = string.Equals(section, "Zoom", StringComparison.OrdinalIgnoreCase) ? zoomValues :
                     string.Equals(section, "Shortcuts", StringComparison.OrdinalIgnoreCase) ? shortcutValues :
                     string.Equals(section, "nametag", StringComparison.OrdinalIgnoreCase) ? nametagValues :
-                    string.Equals(section, "fov_counter", StringComparison.OrdinalIgnoreCase) ? fovCounterValues : null;
+                    string.Equals(section, "fps_counter", StringComparison.OrdinalIgnoreCase) ? fpsCounterValues : null;
                 continue;
             }
             if (sectionValues is null) continue;
@@ -144,6 +144,10 @@ internal static class Program
             shortcutValues.TryGetValue(key, out var value) && IsSupportedKey(value) ? value.Trim().ToUpperInvariant() :
             shortcutValues.ContainsKey(key) ? throw new InvalidDataException($"Invalid key for {key}='{shortcutValues[key]}' in {path}.") : fallback;
 
+        var showFpsCounter = defaults.ShowFpsCounter;
+        if (fpsCounterValues.TryGetValue("enabled", out var enabled))
+            showFpsCounter = bool.TryParse(enabled, out var configuredShowFpsCounter) && configuredShowFpsCounter;
+
         bool ReadBoolean(Dictionary<string, string> values, string key, bool fallback)
         {
             if (!values.TryGetValue(key, out var text)) return fallback;
@@ -160,7 +164,7 @@ internal static class Program
             ReadKey("AlwaysDay", defaults.AlwaysDay), ReadKey("FullBright", defaults.FullBright),
             ReadKey("StatusIndicator", defaults.StatusIndicator), ReadKey("SafeDetach", defaults.SafeDetach),
             ReadBoolean(nametagValues, "show_when_hud_hidden", defaults.ShowNametagWhenHudHidden),
-            fovCounterValues.TryGetValue("enabled", out var enabled) && bool.TryParse(enabled, out var showFovCounter) && showFovCounter);
+            showFpsCounter);
         var keys = new[] { config.Zoom, config.Nametag, config.AlwaysDay, config.FullBright, config.StatusIndicator, config.SafeDetach };
         if (keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != keys.Length)
             throw new InvalidDataException($"Keyboard shortcuts in {path} must be unique.");

@@ -1,24 +1,39 @@
 #pragma once
 
 #include <windows.h>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cwchar>
 #include <iterator>
 #include <string>
 
-namespace fovcounter
+namespace fpscounter
 {
-    constexpr wchar_t kWindowClass[] = L"BedrockToolkit.FovCounter";
+    using StatusLogger = void(*)(const char*);
+    constexpr wchar_t kWindowClass[] = L"BedrockToolkit.FpsCounter";
     constexpr BYTE kBackgroundAlpha = 166; // 65% opacity, rounded to an 8-bit alpha.
+    constexpr int kDefaultFontSize = 28;
+    constexpr int kMinimumFontSize = 12;
+    constexpr int kMaximumFontSize = 48;
 
     inline bool LoadEnabled(const std::wstring& path)
     {
         wchar_t value[16]{};
-        const DWORD length = GetPrivateProfileStringW(L"fov_counter", L"enabled", L"false",
+        const DWORD length = GetPrivateProfileStringW(L"fps_counter", L"enabled", L"",
             value, static_cast<DWORD>(std::size(value)), path.c_str());
-        if (length == 0 || length >= std::size(value) - 1) return false;
+        if (length == 0)
+        {
+            wchar_t keys[128]{};
+            const DWORD keyLength = GetPrivateProfileStringW(L"fps_counter", nullptr, L"",
+                keys, static_cast<DWORD>(std::size(keys)), path.c_str());
+            for (const wchar_t* key = keys; key < keys + keyLength; key += lstrlenW(key) + 1)
+                if (_wcsicmp(key, L"enabled") == 0) return false;
+            return true;
+        }
+        if (length >= std::size(value) - 1) return false;
         const std::wstring text(value, length);
         const size_t first = text.find_first_not_of(L" \t\r\n");
         if (first == std::wstring::npos) return false;
@@ -26,10 +41,25 @@ namespace fovcounter
         return _wcsicmp(text.substr(first, last - first + 1).c_str(), L"true") == 0;
     }
 
-    inline int DisplayValue(float value)
+    inline int LoadFontSize(const std::wstring& path)
     {
-        return std::isfinite(value) && value >= 1.0f && value <= 120.0f ?
-            static_cast<int>(std::lround(value)) : -1;
+        wchar_t value[16]{};
+        const DWORD length = GetPrivateProfileStringW(L"fps_counter", L"font_size", L"28",
+            value, static_cast<DWORD>(std::size(value)), path.c_str());
+        if (length == 0 || length >= std::size(value) - 1) return kDefaultFontSize;
+        wchar_t* end = nullptr;
+        const long parsed = std::wcstol(value, &end, 10);
+        while (end != nullptr && (*end == L' ' || *end == L'\t' || *end == L'\r' || *end == L'\n')) ++end;
+        return end == value || end == nullptr || *end != L'\0' ||
+            parsed < kMinimumFontSize || parsed > kMaximumFontSize ? kDefaultFontSize : static_cast<int>(parsed);
+    }
+
+    inline int FpsValue(uint64_t frames, ULONGLONG elapsedMs)
+    {
+        if (elapsedMs == 0) return -1;
+        const double fps = static_cast<double>(frames) * 1000.0 / static_cast<double>(elapsedMs);
+        return std::isfinite(fps) && fps >= 0.0 ?
+            static_cast<int>(std::lround((std::min)(fps, 1000.0))) : -1;
     }
 
     inline RECT PanelRect(const RECT& client, SIZE_T width, SIZE_T height)
@@ -64,10 +94,11 @@ namespace fovcounter
     class Counter
     {
     public:
-        bool Start(HMODULE module, const std::wstring& configPath)
+        bool Start(HMODULE module, const std::wstring& configPath, StatusLogger logger = nullptr)
         {
             module_ = module;
             configPath_ = configPath;
+            logger_ = logger;
             stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
             if (stop_ == nullptr) return false;
             thread_ = CreateThread(nullptr, 0, Run, this, 0, nullptr);
@@ -80,10 +111,15 @@ namespace fovcounter
         bool Enabled() const { return enabled_.load(); }
         HWND Window() const { return window_.load(); }
 
-        void Publish(HWND gameWindow, int value)
+        void NoteFrame()
+        {
+            frames_.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        void Publish(HWND gameWindow, bool gameplayActive, bool frameSourceReady)
         {
             gameWindow_.store(gameWindow);
-            value_.store(value);
+            gameplayActive_.store(gameplayActive && frameSourceReady);
         }
 
         void BeginShutdown()
@@ -104,6 +140,11 @@ namespace fovcounter
         }
 
     private:
+        void ReportStatus(const char* event)
+        {
+            if (logger_ != nullptr) logger_(event);
+        }
+
         static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
         {
             if (message == WM_NCHITTEST) return HTTRANSPARENT;
@@ -112,11 +153,11 @@ namespace fovcounter
             return DefWindowProcW(window, message, wParam, lParam);
         }
 
-        HFONT CreateCounterFont(HDC dc)
+        HFONT CreateCounterFont(HDC dc, int fontSize)
         {
             for (const wchar_t* face : {L"Minecraftia", L"Mojangles"})
             {
-                HFONT font = CreateFontW(-20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                HFONT font = CreateFontW(-fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
                     DEFAULT_PITCH, face);
                 if (font == nullptr) continue;
@@ -145,7 +186,7 @@ namespace fovcounter
         bool Draw(HWND window, HDC dc, HFONT font, const RECT& client, int value)
         {
             wchar_t text[16]{};
-            swprintf_s(text, L"FOV: %d", value);
+            swprintf_s(text, L"FPS: %d", value);
             HGDIOBJ oldFont = SelectObject(dc, font);
             SIZE extent{};
             if (!GetTextExtentPoint32W(dc, text, lstrlenW(text), &extent))
@@ -215,10 +256,18 @@ namespace fovcounter
             // screen coordinates; otherwise Windows may virtualize those
             // coordinates and place the layered window away from the game.
             const DPI_AWARENESS_CONTEXT gameDpiContext = GetWindowDpiAwarenessContext(initialGameWindow);
-            if (gameDpiContext == nullptr) return;
+            if (gameDpiContext == nullptr)
+            {
+                ReportStatus("fps-overlay-dpi-context-failed");
+                return;
+            }
             const DPI_AWARENESS_CONTEXT previousDpiContext =
                 SetThreadDpiAwarenessContext(gameDpiContext);
-            if (previousDpiContext == nullptr) return;
+            if (previousDpiContext == nullptr)
+            {
+                ReportStatus("fps-overlay-dpi-context-failed");
+                return;
+            }
 
             WNDCLASSEXW windowClass{};
             windowClass.cbSize = sizeof(windowClass);
@@ -227,14 +276,16 @@ namespace fovcounter
             windowClass.lpszClassName = kWindowClass;
             if (RegisterClassExW(&windowClass) == 0)
             {
+                ReportStatus("fps-overlay-window-class-failed");
                 SetThreadDpiAwarenessContext(previousDpiContext);
                 return;
             }
             HWND window = CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                kWindowClass, L"FOV counter", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, module_, nullptr);
+                kWindowClass, L"FPS counter", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, module_, nullptr);
             if (window == nullptr)
             {
+                ReportStatus("fps-overlay-window-failed");
                 UnregisterClassW(kWindowClass, module_);
                 SetThreadDpiAwarenessContext(previousDpiContext);
                 return;
@@ -243,8 +294,17 @@ namespace fovcounter
             HDC dc = CreateCompatibleDC(nullptr);
             HFONT font = nullptr;
             ULONGLONG lastConfigRead = 0;
+            ULONGLONG lastFrameSample = 0;
+            uint64_t previousFrameCount = 0;
+            int fontSize = kDefaultFontSize;
+            bool fontConfigurationRead = false;
             RECT lastClient{};
             int lastValue = -1;
+            int value = -1;
+            bool fontStatusKnown = false;
+            bool fontWasAvailable = false;
+            bool sampleStatusReported = false;
+            bool drawFailureReported = false;
             while (window != nullptr && dc != nullptr && WaitForSingleObject(stop_, 16) == WAIT_TIMEOUT)
             {
                 MSG message{};
@@ -257,19 +317,58 @@ namespace fovcounter
                 if (lastConfigRead == 0 || now - lastConfigRead >= 500)
                 {
                     enabled_.store(LoadEnabled(configPath_));
+                    const int nextFontSize = LoadFontSize(configPath_);
+                    if (!fontConfigurationRead || nextFontSize != fontSize)
+                    {
+                        if (font != nullptr) DeleteObject(font);
+                        font = nullptr;
+                        fontSize = nextFontSize;
+                        fontConfigurationRead = true;
+                        lastValue = -1;
+                    }
                     if (enabled_.load() && font == nullptr)
                     {
                         if (fontPath_.empty()) LoadGameFont();
-                        font = CreateCounterFont(dc);
+                        font = CreateCounterFont(dc, fontSize);
+                    }
+                    const bool fontAvailable = font != nullptr;
+                    if (!fontStatusKnown || fontAvailable != fontWasAvailable)
+                    {
+                        ReportStatus(fontAvailable ? "fps-font-ready" : "fps-font-unavailable");
+                        fontWasAvailable = fontAvailable;
+                        fontStatusKnown = true;
                     }
                     lastConfigRead = now;
                 }
                 const HWND game = gameWindow_.load();
-                const int value = value_.load();
+                const bool gameplayActive = gameplayActive_.load() && enabled_.load();
+                const uint64_t frameCount = frames_.load(std::memory_order_relaxed);
+                if (!gameplayActive)
+                {
+                    previousFrameCount = frameCount;
+                    lastFrameSample = now;
+                    value = -1;
+                }
+                else if (lastFrameSample == 0)
+                {
+                    previousFrameCount = frameCount;
+                    lastFrameSample = now;
+                }
+                else if (now - lastFrameSample >= 1'000)
+                {
+                    value = FpsValue(frameCount - previousFrameCount, now - lastFrameSample);
+                    if (value >= 0 && !sampleStatusReported)
+                    {
+                        ReportStatus("fps-sample-ready");
+                        sampleStatusReported = true;
+                    }
+                    previousFrameCount = frameCount;
+                    lastFrameSample = now;
+                }
                 const HWND foreground = GetForegroundWindow();
                 RECT client{};
                 POINT origin{};
-                const bool visible = enabled_.load() && font != nullptr && value >= 0 &&
+                const bool visible = gameplayActive && font != nullptr && value >= 0 &&
                     game != nullptr && IsWindowVisible(game) && !IsIconic(game) &&
                     IsGameForegroundWindow(foreground, game) &&
                     GetClientRect(game, &client) &&
@@ -281,6 +380,11 @@ namespace fovcounter
                     {
                         if (!Draw(window, dc, font, client, value))
                         {
+                            if (!drawFailureReported)
+                            {
+                                ReportStatus("fps-overlay-draw-failed");
+                                drawFailureReported = true;
+                            }
                             ShowWindow(window, SW_HIDE);
                             lastValue = -1;
                             continue;
@@ -309,9 +413,11 @@ namespace fovcounter
         HANDLE thread_ = nullptr;
         std::wstring configPath_;
         std::wstring fontPath_;
+        StatusLogger logger_ = nullptr;
         std::atomic<bool> enabled_{false};
+        std::atomic<bool> gameplayActive_{false};
         std::atomic<HWND> gameWindow_{nullptr};
         std::atomic<HWND> window_{nullptr};
-        std::atomic<int> value_{-1};
+        std::atomic<uint64_t> frames_{0};
     };
 }

@@ -565,6 +565,8 @@ namespace
 
     bool SameFloatBits(float left, float right);
     bool ReadTrackedZoomMouseSensitivity(float& value);
+    bool CompareExchangeFloat(uintptr_t address, float expected, float replacement);
+    void LogZoomStatus(const char* event);
 
     void UpdateZoomMouseSensitivityForFov(float currentFov)
     {

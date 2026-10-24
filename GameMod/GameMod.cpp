@@ -172,6 +172,7 @@ namespace
     struct ZoomSensitivityState
     {
         fov::Target target;
+        uintptr_t owner = 0;
         uintptr_t valueAddress = 0;
         float originalValue = 0.0f;
         float zoomValue = 0.0f;
@@ -489,7 +490,7 @@ namespace
         return true;
     }
 
-    bool ReadVerifiedMouseSensitivity(uintptr_t options, uintptr_t& valueAddress, float& value)
+    bool ReadVerifiedMouseSensitivity(uintptr_t options, uintptr_t& owner, uintptr_t& valueAddress, float& value)
     {
         if (!g_supportedBuild || options == 0 || (options & 7) != 0 ||
             options > (std::numeric_limits<uintptr_t>::max)() - fov::kOptionsSearchBytes)
@@ -503,6 +504,8 @@ namespace
         // Resolve the named mouse sensitivity slider from the verified Options
         // object independently of the current FOV target.
         unsigned int matches = 0;
+        uintptr_t foundOwner = 0;
+        uintptr_t foundAddress = 0;
         float foundValue = 0.0f;
         for (size_t offset = 0; offset + sizeof(uintptr_t) <= fov::kOptionsSearchBytes;
             offset += sizeof(uintptr_t))
@@ -530,11 +533,14 @@ namespace
                 continue;
 
             ++matches;
-            valueAddress = wrapper + fov::kPatternOffset + 2 * sizeof(float);
+            foundOwner = header[1];
+            foundAddress = wrapper + fov::kPatternOffset + 2 * sizeof(float);
             foundValue = values[2];
         }
 
         if (matches != 1) return false;
+        owner = foundOwner;
+        valueAddress = foundAddress;
         value = foundValue;
         return true;
     }
@@ -656,11 +662,13 @@ namespace
     SensitivityRestoreResult RestoreZoomSensitivity()
     {
         if (!g_zoomSensitivity.active) return SensitivityRestoreResult::NotActive;
+        uintptr_t currentOwner = 0;
         uintptr_t currentAddress = 0;
         float currentValue = 0.0f;
-        if (!ReadVerifiedMouseSensitivity(g_zoomSensitivity.target.options, currentAddress, currentValue))
+        if (!ReadVerifiedMouseSensitivity(g_zoomSensitivity.target.options, currentOwner, currentAddress,
+            currentValue))
             return SensitivityRestoreResult::Failed;
-        if (currentAddress != g_zoomSensitivity.valueAddress)
+        if (currentOwner != g_zoomSensitivity.owner || currentAddress != g_zoomSensitivity.valueAddress)
         {
             g_zoomSensitivity.active = false;
             LogZoomStatus("mouse-sensitivity-target-changed");
@@ -1305,9 +1313,11 @@ namespace
             return;
         }
 
+        uintptr_t sensitivityOwner = 0;
         uintptr_t sensitivityValueAddress = 0;
         float sensitivityValue = 0.0f;
-        bool sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, sensitivityValueAddress, sensitivityValue);
+        bool sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, sensitivityOwner,
+            sensitivityValueAddress, sensitivityValue);
         g_zoomSensitivity = {};
         if (!sensitivityApplied)
         {
@@ -1330,15 +1340,18 @@ namespace
         if (sensitivityApplied)
         {
             const float zoomSensitivity = g_zoomConfig.mouseSensitivity * kMouseSensitivityPercentScale;
+            uintptr_t currentSensitivityOwner = 0;
             uintptr_t currentSensitivityAddress = 0;
             float currentSensitivityValue = 0.0f;
-            sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, currentSensitivityAddress,
-                currentSensitivityValue) && currentSensitivityAddress == sensitivityValueAddress &&
+            sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, currentSensitivityOwner,
+                currentSensitivityAddress, currentSensitivityValue) && currentSensitivityOwner == sensitivityOwner &&
+                currentSensitivityAddress == sensitivityValueAddress &&
                 std::fabs(currentSensitivityValue - sensitivityValue) < kFovMatchTolerance;
             if (std::fabs(sensitivityValue - zoomSensitivity) >= kFovMatchTolerance &&
                 sensitivityApplied && CompareExchangeFloat(sensitivityValueAddress, sensitivityValue, zoomSensitivity))
             {
                 g_zoomSensitivity.target = target;
+                g_zoomSensitivity.owner = sensitivityOwner;
                 g_zoomSensitivity.valueAddress = sensitivityValueAddress;
                 g_zoomSensitivity.originalValue = sensitivityValue;
                 g_zoomSensitivity.zoomValue = zoomSensitivity;

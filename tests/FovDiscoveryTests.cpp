@@ -461,6 +461,7 @@ namespace
     {
         unsigned char* memory = static_cast<unsigned char*>(VirtualAlloc(nullptr, 0x9000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
         fov::Target target;
+        uintptr_t sensitivityOwnerAddress = 0;
         uintptr_t sensitivityValueAddress = 0;
 
         void Pointer(size_t offset, uintptr_t value) { std::memcpy(memory + offset, &value, 8); }
@@ -497,17 +498,23 @@ namespace
             const float values[] = {30, 110, 70, 60, .001f};
             std::memcpy(memory + 1040, values, sizeof(values));
         }
+        void SetSensitivityOwner(size_t ownerOffset)
+        {
+            const uintptr_t start = reinterpret_cast<uintptr_t>(memory);
+            constexpr size_t wrapperOffset = 0x2000;
+            sensitivityOwnerAddress = start + ownerOffset;
+            Pointer(wrapperOffset + 8, sensitivityOwnerAddress);
+            String(ownerOffset + fov::kKeyOffset, "ctrl_sensitivity2");
+            String(ownerOffset + fov::kDisplayNameOffset, "sensitivity");
+            String(ownerOffset + fov::kCaptionOffset, "options.sensitivity");
+        }
         void AddSensitivity()
         {
             const uintptr_t start = reinterpret_cast<uintptr_t>(memory);
             constexpr size_t wrapperOffset = 0x2000;
-            constexpr size_t ownerOffset = 0x2400;
             Pointer(0x190, start + wrapperOffset);
             Pointer(wrapperOffset, g_gameModuleBase + fov::kMouseSensitivityVtableRva);
-            Pointer(wrapperOffset + 8, start + ownerOffset);
-            String(ownerOffset + fov::kKeyOffset, "ctrl_sensitivity2");
-            String(ownerOffset + fov::kDisplayNameOffset, "sensitivity");
-            String(ownerOffset + fov::kCaptionOffset, "options.sensitivity");
+            SetSensitivityOwner(0x2400);
             const float values[] = {0.0f, 1.0f, 0.50f, 0.0f};
             std::memcpy(memory + wrapperOffset + fov::kPatternOffset, values, sizeof(values));
             sensitivityValueAddress = start + wrapperOffset + fov::kPatternOffset + 2 * sizeof(float);
@@ -523,7 +530,8 @@ namespace
     {
         Fixture fixture;
         fixture.AddSensitivity();
-        g_zoomSensitivity = {fixture.target, fixture.sensitivityValueAddress, 0.50f, 0.12f, true};
+        g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
+            0.50f, 0.12f, true};
         float zoomValue = 0.12f;
         std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomValue, sizeof(zoomValue));
         fixture.Pointer(1032, 0);
@@ -538,6 +546,31 @@ namespace
         float restoredValue = 0.0f;
         std::memcpy(&restoredValue, reinterpret_cast<void*>(fixture.sensitivityValueAddress), sizeof(restoredValue));
         Check(restoredValue == 0.50f, "independent restoration returns the original sensitivity");
+        g_zoomSensitivity = {};
+    }
+
+    void TestZoomSensitivityOwnerReplacementPreserved()
+    {
+        Fixture fixture;
+        fixture.AddSensitivity();
+        g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
+            0.50f, 0.12f, true};
+        const float zoomValue = 0.12f;
+        std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomValue, sizeof(zoomValue));
+
+        fixture.SetSensitivityOwner(0x2800);
+        uintptr_t currentOwner = 0;
+        uintptr_t currentAddress = 0;
+        float currentValue = 0.0f;
+        Check(ReadVerifiedMouseSensitivity(fixture.target.options, currentOwner, currentAddress, currentValue) &&
+            currentOwner == fixture.sensitivityOwnerAddress && currentAddress == g_zoomSensitivity.valueAddress &&
+            currentValue == zoomValue,
+            "replacement sensitivity owner remains valid at the same wrapper and value address");
+        Check(RestoreZoomSensitivity() == SensitivityRestoreResult::ValueChanged && !g_zoomSensitivity.active,
+            "owner replacement is treated as a changed target");
+        float preservedValue = 0.0f;
+        std::memcpy(&preservedValue, reinterpret_cast<void*>(fixture.sensitivityValueAddress), sizeof(preservedValue));
+        Check(preservedValue == zoomValue, "owner replacement never restores the previous owner's value");
         g_zoomSensitivity = {};
     }
 
@@ -561,7 +594,8 @@ namespace
         g_zoom.originalMinimumValue = 30.0f;
         g_zoomRestorePending = false;
 
-        g_zoomSensitivity = {fixture.target, fixture.sensitivityValueAddress, 0.50f, 0.12f, true};
+        g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
+            0.50f, 0.12f, true};
         const float zoomSensitivity = 0.12f;
         std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomSensitivity,
             sizeof(zoomSensitivity));
@@ -732,6 +766,7 @@ int main()
         TestZoomTransitionInterpolation();
         TestZoomSensitivityRestoration();
         TestZoomSensitivityRestorationAfterFovReplacement();
+        TestZoomSensitivityOwnerReplacementPreserved();
         TestZoomSensitivityRestorationWhenFovIsUnreadable();
         TestDeferredZoomDiagnostics();
         TestBlockedDiagnosticWriter();

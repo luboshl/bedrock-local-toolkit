@@ -201,7 +201,13 @@ else {
 if (-not (Test-Path -LiteralPath $toolkitConfig)) {
     throw "Toolkit configuration is missing: $toolkitConfig"
 }
-Copy-Item -LiteralPath $toolkitConfig -Destination (Join-Path $launcherOutput 'bedrock-toolkit.ini') -Force
+$launcherConfig = Join-Path $launcherOutput 'bedrock-toolkit.ini'
+if (-not (Test-Path -LiteralPath $launcherConfig)) {
+    Copy-Item -LiteralPath $toolkitConfig -Destination $launcherConfig
+}
+else {
+    Write-Host "Keeping existing configuration: $launcherConfig"
+}
 try {
     Copy-Item -LiteralPath $nativeDll -Destination (Join-Path $launcherOutput 'GameMod.dll') -Force
 }

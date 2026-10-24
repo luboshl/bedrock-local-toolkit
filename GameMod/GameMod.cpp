@@ -195,6 +195,8 @@ namespace
         float originalValue = 0.0f;
         float zoomValue = 0.0f;
         bool active = false;
+        uintptr_t optionsSlotAddress = 0;
+        bool bindingLost = false;
     };
 
     struct FovPointerConfig
@@ -508,7 +510,8 @@ namespace
         return true;
     }
 
-    bool ReadVerifiedMouseSensitivity(uintptr_t options, uintptr_t& owner, uintptr_t& valueAddress, float& value)
+    bool ReadVerifiedMouseSensitivity(uintptr_t options, uintptr_t& owner, uintptr_t& valueAddress,
+        uintptr_t& optionsSlotAddress, float& value)
     {
         if (!g_supportedBuild || options == 0 || (options & 7) != 0 ||
             options > (std::numeric_limits<uintptr_t>::max)() - fov::kOptionsSearchBytes)
@@ -524,6 +527,7 @@ namespace
         unsigned int matches = 0;
         uintptr_t foundOwner = 0;
         uintptr_t foundAddress = 0;
+        uintptr_t foundSlotAddress = 0;
         float foundValue = 0.0f;
         for (size_t offset = 0; offset + sizeof(uintptr_t) <= fov::kOptionsSearchBytes;
             offset += sizeof(uintptr_t))
@@ -553,12 +557,14 @@ namespace
             ++matches;
             foundOwner = header[1];
             foundAddress = wrapper + fov::kPatternOffset + 2 * sizeof(float);
+            foundSlotAddress = options + offset;
             foundValue = values[2];
         }
 
         if (matches != 1) return false;
         owner = foundOwner;
         valueAddress = foundAddress;
+        optionsSlotAddress = foundSlotAddress;
         value = foundValue;
         return true;
     }
@@ -570,12 +576,13 @@ namespace
 
     void UpdateZoomMouseSensitivityForFov(float currentFov)
     {
-        if (!g_zoomSensitivity.active) return;
+        if (!g_zoomSensitivity.active || g_zoomSensitivity.bindingLost) return;
 
         float currentValue = 0.0f;
         if (!ReadTrackedZoomMouseSensitivity(currentValue))
         {
-            LogZoomStatus("mouse-sensitivity-update-validation-failed");
+            LogZoomStatus(g_zoomSensitivity.bindingLost ? "mouse-sensitivity-options-binding-changed" :
+                "mouse-sensitivity-update-validation-failed");
             return;
         }
         if (!SameFloatBits(currentValue, g_zoomSensitivity.zoomValue))
@@ -696,7 +703,7 @@ namespace
         return leftBits == rightBits;
     }
 
-    bool ReadTrackedZoomMouseSensitivity(float& value)
+    bool ReadTrackedZoomMouseSensitivityWrapper(float& value)
     {
         if (!g_zoomSensitivity.active || g_zoomSensitivity.valueAddress <
             fov::kPatternOffset + 2 * sizeof(float)) return false;
@@ -722,6 +729,34 @@ namespace
         return true;
     }
 
+    bool ReadTrackedZoomMouseSensitivity(float& value)
+    {
+        if (!g_zoomSensitivity.active || g_zoomSensitivity.bindingLost ||
+            g_zoomSensitivity.target.options == 0 || g_zoomSensitivity.optionsSlotAddress <
+                g_zoomSensitivity.target.options ||
+            g_zoomSensitivity.target.options > (std::numeric_limits<uintptr_t>::max)() -
+                fov::kOptionsSearchBytes ||
+            g_zoomSensitivity.optionsSlotAddress >= g_zoomSensitivity.target.options + fov::kOptionsSearchBytes ||
+            g_zoomSensitivity.optionsSlotAddress % alignof(uintptr_t) != 0 ||
+            g_zoomSensitivity.valueAddress < fov::kPatternOffset + 2 * sizeof(float))
+            return false;
+
+        uintptr_t optionsVtable = 0;
+        uintptr_t wrapper = 0;
+        if (!ReadPrivateMemory(g_zoomSensitivity.target.options, &optionsVtable, sizeof(optionsVtable)) ||
+            optionsVtable != g_gameModuleBase + fov::kOptionsVtableRva ||
+            !ReadPrivateMemory(g_zoomSensitivity.optionsSlotAddress, &wrapper, sizeof(wrapper)))
+            return false;
+
+        const uintptr_t trackedWrapper = g_zoomSensitivity.valueAddress - fov::kPatternOffset - 2 * sizeof(float);
+        if (wrapper != trackedWrapper)
+        {
+            g_zoomSensitivity.bindingLost = true;
+            return false;
+        }
+        return ReadTrackedZoomMouseSensitivityWrapper(value);
+    }
+
     SensitivityRestoreResult RestoreZoomSensitivityValue(uintptr_t address, float originalValue, float zoomValue)
     {
         float currentValue = 0.0f;
@@ -741,20 +776,47 @@ namespace
         if (!g_zoomSensitivity.active) return SensitivityRestoreResult::NotActive;
         uintptr_t currentOwner = 0;
         uintptr_t currentAddress = 0;
+        uintptr_t currentSlotAddress = 0;
         float currentValue = 0.0f;
-        if (!ReadVerifiedMouseSensitivity(g_zoomSensitivity.target.options, currentOwner, currentAddress,
-            currentValue))
-            return SensitivityRestoreResult::Failed;
-        if (currentOwner != g_zoomSensitivity.owner || currentAddress != g_zoomSensitivity.valueAddress)
+        if (!g_zoomSensitivity.bindingLost &&
+            ReadVerifiedMouseSensitivity(g_zoomSensitivity.target.options, currentOwner, currentAddress,
+                currentSlotAddress, currentValue))
         {
-            g_zoomSensitivity.active = false;
-            LogZoomStatus("mouse-sensitivity-target-changed");
-            return SensitivityRestoreResult::ValueChanged;
+            if (currentSlotAddress != g_zoomSensitivity.optionsSlotAddress ||
+                currentAddress != g_zoomSensitivity.valueAddress)
+                g_zoomSensitivity.bindingLost = true;
+            else if (currentOwner != g_zoomSensitivity.owner)
+            {
+                g_zoomSensitivity.active = false;
+                LogZoomStatus("mouse-sensitivity-target-changed");
+                return SensitivityRestoreResult::ValueChanged;
+            }
         }
+
+        if (!g_zoomSensitivity.bindingLost)
+        {
+            if (!ReadTrackedZoomMouseSensitivity(currentValue))
+            {
+                if (!g_zoomSensitivity.bindingLost) return SensitivityRestoreResult::Failed;
+            }
+            else
+            {
+                const SensitivityRestoreResult result = RestoreZoomSensitivityValue(g_zoomSensitivity.valueAddress,
+                    g_zoomSensitivity.originalValue, g_zoomSensitivity.zoomValue);
+                if (result != SensitivityRestoreResult::Failed) g_zoomSensitivity.active = false;
+                LogZoomStatus(result == SensitivityRestoreResult::Restored ? "mouse-sensitivity-restored" :
+                    result == SensitivityRestoreResult::ValueChanged ? "mouse-sensitivity-changed-externally" :
+                    "mouse-sensitivity-restore-pending");
+                return result;
+            }
+        }
+
+        if (!ReadTrackedZoomMouseSensitivityWrapper(currentValue))
+            return SensitivityRestoreResult::Failed;
         const SensitivityRestoreResult result = RestoreZoomSensitivityValue(g_zoomSensitivity.valueAddress,
             g_zoomSensitivity.originalValue, g_zoomSensitivity.zoomValue);
         if (result != SensitivityRestoreResult::Failed) g_zoomSensitivity.active = false;
-        LogZoomStatus(result == SensitivityRestoreResult::Restored ? "mouse-sensitivity-restored" :
+        LogZoomStatus(result == SensitivityRestoreResult::Restored ? "mouse-sensitivity-restored-after-rebind" :
             result == SensitivityRestoreResult::ValueChanged ? "mouse-sensitivity-changed-externally" :
             "mouse-sensitivity-restore-pending");
         return result;
@@ -1392,9 +1454,10 @@ namespace
 
         uintptr_t sensitivityOwner = 0;
         uintptr_t sensitivityValueAddress = 0;
+        uintptr_t sensitivityOptionsSlotAddress = 0;
         float sensitivityValue = 0.0f;
         bool sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, sensitivityOwner,
-            sensitivityValueAddress, sensitivityValue);
+            sensitivityValueAddress, sensitivityOptionsSlotAddress, sensitivityValue);
         g_zoomSensitivity = {};
         if (!sensitivityApplied)
         {
@@ -1418,16 +1481,20 @@ namespace
         {
             uintptr_t currentSensitivityOwner = 0;
             uintptr_t currentSensitivityAddress = 0;
+            uintptr_t currentSensitivitySlotAddress = 0;
             float currentSensitivityValue = 0.0f;
             sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, currentSensitivityOwner,
-                currentSensitivityAddress, currentSensitivityValue) && currentSensitivityOwner == sensitivityOwner &&
+                currentSensitivityAddress, currentSensitivitySlotAddress, currentSensitivityValue) &&
+                currentSensitivityOwner == sensitivityOwner &&
                 currentSensitivityAddress == sensitivityValueAddress &&
+                currentSensitivitySlotAddress == sensitivityOptionsSlotAddress &&
                 std::fabs(currentSensitivityValue - sensitivityValue) < kFovMatchTolerance;
             if (sensitivityApplied)
             {
                 g_zoomSensitivity.target = target;
                 g_zoomSensitivity.owner = sensitivityOwner;
                 g_zoomSensitivity.valueAddress = sensitivityValueAddress;
+                g_zoomSensitivity.optionsSlotAddress = sensitivityOptionsSlotAddress;
                 g_zoomSensitivity.originalValue = sensitivityValue;
                 g_zoomSensitivity.zoomValue = sensitivityValue;
                 g_zoomSensitivity.active = true;

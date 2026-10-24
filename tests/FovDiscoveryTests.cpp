@@ -225,6 +225,8 @@ namespace
             "minimum FOV reaches the configured 12 percent Minecraft sensitivity");
         Check(std::fabs(GetZoomMouseSensitivityValue(0.20f, 20.0f, 70.0f, 1.0f) - 0.20f) < 0.0001f,
             "20 percent in the INI maps to the same normalized Minecraft option value");
+        Check(std::fabs(GetZoomMouseSensitivityValue(0.01f, 45.0f, 70.0f, 1.0f) - 0.45f) < 0.0001f,
+            "low native sensitivity reaches the configured target without a ratio cap");
         Check(GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 0.0f) == 0.12f &&
             GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 120.0f) == 0.24f,
             "sensitivity interpolation clamps FOV to its valid endpoints");
@@ -498,6 +500,7 @@ namespace
         fov::Target target;
         uintptr_t sensitivityOwnerAddress = 0;
         uintptr_t sensitivityValueAddress = 0;
+        uintptr_t sensitivityOptionsSlotAddress = 0;
 
         void Pointer(size_t offset, uintptr_t value) { std::memcpy(memory + offset, &value, 8); }
         void String(size_t offset, const char* value)
@@ -548,11 +551,24 @@ namespace
             const uintptr_t start = reinterpret_cast<uintptr_t>(memory);
             constexpr size_t wrapperOffset = 0x2000;
             Pointer(0x190, start + wrapperOffset);
+            sensitivityOptionsSlotAddress = start + 0x190;
             Pointer(wrapperOffset, g_gameModuleBase + fov::kMouseSensitivityVtableRva);
             SetSensitivityOwner(0x2400);
             const float values[] = {0.0f, 1.0f, 0.50f, 0.0f};
             std::memcpy(memory + wrapperOffset + fov::kPatternOffset, values, sizeof(values));
             sensitivityValueAddress = start + wrapperOffset + fov::kPatternOffset + 2 * sizeof(float);
+        }
+        void ReplaceSensitivityOptionBinding()
+        {
+            const uintptr_t start = reinterpret_cast<uintptr_t>(memory);
+            constexpr size_t oldWrapperOffset = 0x2000;
+            constexpr size_t replacementWrapperOffset = 0x3000;
+            std::memcpy(memory + replacementWrapperOffset, memory + oldWrapperOffset,
+                fov::kPatternOffset + 4 * sizeof(float));
+            const float replacementValue = 0.8f;
+            std::memcpy(memory + replacementWrapperOffset + fov::kPatternOffset + 2 * sizeof(float),
+                &replacementValue, sizeof(replacementValue));
+            Pointer(0x190, start + replacementWrapperOffset);
         }
         ~Fixture() { VirtualFree(memory, 0, MEM_RELEASE); }
         Fixture(const Fixture&) = delete;
@@ -567,6 +583,7 @@ namespace
         fixture.AddSensitivity();
         g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
             0.50f, 0.12f, true};
+        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
         float zoomValue = 0.12f;
         std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomValue, sizeof(zoomValue));
         fixture.Pointer(1032, 0);
@@ -590,15 +607,19 @@ namespace
         fixture.AddSensitivity();
         g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
             0.50f, 0.12f, true};
+        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
         const float zoomValue = 0.12f;
         std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomValue, sizeof(zoomValue));
 
         fixture.SetSensitivityOwner(0x2800);
         uintptr_t currentOwner = 0;
         uintptr_t currentAddress = 0;
+        uintptr_t currentSlotAddress = 0;
         float currentValue = 0.0f;
-        Check(ReadVerifiedMouseSensitivity(fixture.target.options, currentOwner, currentAddress, currentValue) &&
+        Check(ReadVerifiedMouseSensitivity(fixture.target.options, currentOwner, currentAddress,
+            currentSlotAddress, currentValue) &&
             currentOwner == fixture.sensitivityOwnerAddress && currentAddress == g_zoomSensitivity.valueAddress &&
+            currentSlotAddress == fixture.sensitivityOptionsSlotAddress &&
             currentValue == zoomValue,
             "replacement sensitivity owner remains valid at the same wrapper and value address");
         Check(RestoreZoomSensitivity() == SensitivityRestoreResult::ValueChanged && !g_zoomSensitivity.active,
@@ -606,6 +627,43 @@ namespace
         float preservedValue = 0.0f;
         std::memcpy(&preservedValue, reinterpret_cast<void*>(fixture.sensitivityValueAddress), sizeof(preservedValue));
         Check(preservedValue == zoomValue, "owner replacement never restores the previous owner's value");
+        g_zoomSensitivity = {};
+    }
+
+    void TestZoomSensitivityOptionsBindingReplacementStopsUpdates()
+    {
+        Fixture fixture;
+        fixture.AddSensitivity();
+        g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
+            0.50f, 0.12f, true};
+        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+        std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &g_zoomSensitivity.zoomValue,
+            sizeof(g_zoomSensitivity.zoomValue));
+        g_zoom.originalValue = 70.0f;
+        g_zoomConfig.mouseSensitivity = 45.0f;
+
+        fixture.ReplaceSensitivityOptionBinding();
+        UpdateZoomMouseSensitivityForFov(1.0f);
+
+        float detachedValue = 0.0f;
+        std::memcpy(&detachedValue, reinterpret_cast<void*>(fixture.sensitivityValueAddress), sizeof(detachedValue));
+        Check(g_zoomSensitivity.bindingLost && g_zoomSensitivity.active && detachedValue == 0.12f,
+            "replacement Options binding stops writes to the readable detached wrapper");
+
+        Check(RestoreZoomSensitivity() == SensitivityRestoreResult::Restored && !g_zoomSensitivity.active,
+            "detached wrapper is restored after the Options binding changes");
+        float restoredDetachedValue = 0.0f;
+        std::memcpy(&restoredDetachedValue, reinterpret_cast<void*>(fixture.sensitivityValueAddress),
+            sizeof(restoredDetachedValue));
+        Check(restoredDetachedValue == 0.50f, "detached wrapper returns to its original sensitivity");
+
+        uintptr_t owner = 0;
+        uintptr_t address = 0;
+        uintptr_t slotAddress = 0;
+        float replacementValue = 0.0f;
+        Check(ReadVerifiedMouseSensitivity(fixture.target.options, owner, address, slotAddress, replacementValue) &&
+            address != fixture.sensitivityValueAddress && replacementValue == 0.8f,
+            "replacement Options wrapper remains unchanged after detached restoration");
         g_zoomSensitivity = {};
     }
 
@@ -631,6 +689,7 @@ namespace
 
         g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
             0.50f, 0.12f, true};
+        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
         const float zoomSensitivity = 0.12f;
         std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomSensitivity,
             sizeof(zoomSensitivity));
@@ -803,6 +862,7 @@ int main()
         TestZoomSensitivityRestoration();
         TestZoomSensitivityRestorationAfterFovReplacement();
         TestZoomSensitivityOwnerReplacementPreserved();
+        TestZoomSensitivityOptionsBindingReplacementStopsUpdates();
         TestZoomSensitivityRestorationWhenFovIsUnreadable();
         TestDeferredZoomDiagnostics();
         TestBlockedDiagnosticWriter();

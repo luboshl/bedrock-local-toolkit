@@ -197,6 +197,28 @@ namespace
             "zoom easing is independent of the configured duration");
     }
 
+    void TestZoomSensitivityRestoration()
+    {
+        float liveSensitivity = 0.50f;
+        Check(CompareExchangeFloat(reinterpret_cast<uintptr_t>(&liveSensitivity), 0.50f, 0.12f) &&
+            std::fabs(liveSensitivity - 0.12f) < kFovMatchTolerance,
+            "verified sensitivity writes use an atomic compare-and-swap");
+        Check(!CompareExchangeFloat(reinterpret_cast<uintptr_t>(&liveSensitivity), 0.50f, 0.08f) &&
+            std::fabs(liveSensitivity - 0.12f) < kFovMatchTolerance,
+            "sensitivity write refuses a value changed after verification");
+
+        Check(RestoreZoomSensitivityValue(reinterpret_cast<uintptr_t>(&liveSensitivity), 0.50f, 0.12f) ==
+            SensitivityRestoreResult::Restored &&
+            std::fabs(liveSensitivity - 0.50f) < kFovMatchTolerance,
+            "Zoom restores its temporary sensitivity value");
+
+        liveSensitivity = 0.37f;
+        Check(RestoreZoomSensitivityValue(reinterpret_cast<uintptr_t>(&liveSensitivity), 0.50f, 0.12f) ==
+            SensitivityRestoreResult::ValueChanged &&
+            std::fabs(liveSensitivity - 0.37f) < kFovMatchTolerance,
+            "Zoom preserves a sensitivity value changed by another actor");
+    }
+
     void TestOverlayVisibilityPositionFlags()
     {
         Check((OverlayPositionFlags(false) & SWP_SHOWWINDOW) == 0,
@@ -623,6 +645,7 @@ int main()
         TestFovCounterLiveValue();
         TestScreenInput();
         TestZoomTransitionInterpolation();
+        TestZoomSensitivityRestoration();
         TestDeferredZoomDiagnostics();
         TestBlockedDiagnosticWriter();
         TestPendingRestoreDiagnostics();
@@ -705,13 +728,13 @@ int main()
             Check(g_fovScan.result == FovScanResult::Unique &&
                 fov::SameTarget(g_fovScan.foundTarget, fixture.target), "unique full scan, including own scratch buffer");
             Check(fixture.Value() == 70, "discovery never writes FOV");
-            Check(CompareExchangeFov(fixture.target.pattern + 8, 70, 10.0f), "zoom to 10");
+            Check(CompareExchangeFloat(fixture.target.pattern + 8, 70, 10.0f), "zoom to 10");
             g_zoom = {fixture.target, 70, true};
             g_zoom.displayedValue = 10.0f;
             Check(fixture.Value() == 10 && RestoreZoom() == FovRestoreResult::Restored && fixture.Value() == 70,
                 "restore original FOV");
             fixture.Value(95);
-            Check(!CompareExchangeFov(fixture.target.pattern + 8, 70, 10) && fixture.Value() == 95, "concurrent setting change");
+            Check(!CompareExchangeFloat(fixture.target.pattern + 8, 70, 10) && fixture.Value() == 95, "concurrent setting change");
             g_zoom = {fixture.target, 70, true};
             g_zoom.displayedValue = 10.0f;
             Check(RestoreZoom() == FovRestoreResult::ValueChanged && fixture.Value() == 95, "external changes preserved");

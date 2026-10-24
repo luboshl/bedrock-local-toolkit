@@ -80,6 +80,24 @@ namespace
         return startValue + (targetValue - startValue) * eased;
     }
 
+    float GetZoomMouseSensitivityValue(float normalSensitivity, float targetSensitivityPercent,
+        float normalFov, float currentFov)
+    {
+        if (!std::isfinite(normalSensitivity) || !std::isfinite(targetSensitivityPercent) ||
+            !std::isfinite(normalFov) || !std::isfinite(currentFov) ||
+            normalFov <= kZoomMinimumFov)
+            return normalSensitivity;
+
+        const double zoomProgress = std::clamp(
+            (static_cast<double>(normalFov) - currentFov) /
+                (static_cast<double>(normalFov) - kZoomMinimumFov),
+            0.0, 1.0);
+        const double targetSensitivity = std::clamp(static_cast<double>(targetSensitivityPercent), 0.0, 100.0) *
+            kMouseSensitivityPercentScale;
+        return static_cast<float>(static_cast<double>(normalSensitivity) +
+            (targetSensitivity - normalSensitivity) * zoomProgress);
+    }
+
     struct ZoomConfig
     {
         float firstPersonFov = kDefaultFirstPersonZoomFov;
@@ -545,6 +563,37 @@ namespace
         return true;
     }
 
+    bool SameFloatBits(float left, float right);
+    bool ReadTrackedZoomMouseSensitivity(float& value);
+
+    void UpdateZoomMouseSensitivityForFov(float currentFov)
+    {
+        if (!g_zoomSensitivity.active) return;
+
+        float currentValue = 0.0f;
+        if (!ReadTrackedZoomMouseSensitivity(currentValue))
+        {
+            LogZoomStatus("mouse-sensitivity-update-validation-failed");
+            return;
+        }
+        if (!SameFloatBits(currentValue, g_zoomSensitivity.zoomValue))
+        {
+            g_zoomSensitivity.active = false;
+            LogZoomStatus("mouse-sensitivity-changed-externally");
+            return;
+        }
+
+        const float desiredValue = GetZoomMouseSensitivityValue(g_zoomSensitivity.originalValue,
+            g_zoomConfig.mouseSensitivity, g_zoom.originalValue, currentFov);
+        if (SameFloatBits(currentValue, desiredValue)) return;
+        if (CompareExchangeFloat(g_zoomSensitivity.valueAddress, currentValue, desiredValue))
+        {
+            g_zoomSensitivity.zoomValue = desiredValue;
+            return;
+        }
+        LogZoomStatus("mouse-sensitivity-update-conflict");
+    }
+
     // Input callbacks must never wait for disk or a diagnostic lock. Events
     // have static lifetime; the worker formats snapshots for the file writer.
     diagnostics::Writer g_diagnosticWriter;
@@ -643,6 +692,32 @@ namespace
         std::memcpy(&leftBits, &left, sizeof(leftBits));
         std::memcpy(&rightBits, &right, sizeof(rightBits));
         return leftBits == rightBits;
+    }
+
+    bool ReadTrackedZoomMouseSensitivity(float& value)
+    {
+        if (!g_zoomSensitivity.active || g_zoomSensitivity.valueAddress <
+            fov::kPatternOffset + 2 * sizeof(float)) return false;
+        const uintptr_t wrapper = g_zoomSensitivity.valueAddress - fov::kPatternOffset - 2 * sizeof(float);
+        uintptr_t header[2]{};
+        if (!ReadPrivateMemory(wrapper, header, sizeof(header)) ||
+            header[0] != g_gameModuleBase + fov::kMouseSensitivityVtableRva ||
+            header[1] != g_zoomSensitivity.owner || header[1] == 0 ||
+            (header[1] & 7) != 0 || header[1] > (std::numeric_limits<uintptr_t>::max)() - 0x200 ||
+            !MatchOptionString(header[1] + fov::kKeyOffset, "ctrl_sensitivity2", sizeof("ctrl_sensitivity2") - 1) ||
+            !MatchOptionString(header[1] + fov::kDisplayNameOffset, "sensitivity", sizeof("sensitivity") - 1) ||
+            !MatchOptionString(header[1] + fov::kCaptionOffset, "options.sensitivity", sizeof("options.sensitivity") - 1))
+            return false;
+
+        float values[4]{};
+        if (!ReadPrivateMemory(wrapper + fov::kPatternOffset, values, sizeof(values)) ||
+            !std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2]) ||
+            std::fabs(values[0] - 0.0f) >= kFovMatchTolerance ||
+            std::fabs(values[1] - 1.0f) >= kFovMatchTolerance ||
+            values[2] < kMouseSensitivityRuntimeMinimum || values[2] > kMouseSensitivityRuntimeMaximum)
+            return false;
+        value = values[2];
+        return true;
     }
 
     SensitivityRestoreResult RestoreZoomSensitivityValue(uintptr_t address, float originalValue, float zoomValue)
@@ -1339,7 +1414,6 @@ namespace
 
         if (sensitivityApplied)
         {
-            const float zoomSensitivity = g_zoomConfig.mouseSensitivity * kMouseSensitivityPercentScale;
             uintptr_t currentSensitivityOwner = 0;
             uintptr_t currentSensitivityAddress = 0;
             float currentSensitivityValue = 0.0f;
@@ -1347,24 +1421,18 @@ namespace
                 currentSensitivityAddress, currentSensitivityValue) && currentSensitivityOwner == sensitivityOwner &&
                 currentSensitivityAddress == sensitivityValueAddress &&
                 std::fabs(currentSensitivityValue - sensitivityValue) < kFovMatchTolerance;
-            if (std::fabs(sensitivityValue - zoomSensitivity) >= kFovMatchTolerance &&
-                sensitivityApplied && CompareExchangeFloat(sensitivityValueAddress, sensitivityValue, zoomSensitivity))
+            if (sensitivityApplied)
             {
                 g_zoomSensitivity.target = target;
                 g_zoomSensitivity.owner = sensitivityOwner;
                 g_zoomSensitivity.valueAddress = sensitivityValueAddress;
                 g_zoomSensitivity.originalValue = sensitivityValue;
-                g_zoomSensitivity.zoomValue = zoomSensitivity;
+                g_zoomSensitivity.zoomValue = sensitivityValue;
                 g_zoomSensitivity.active = true;
-                LogZoomStatus("mouse-sensitivity-option-adjusted");
-            }
-            else if (sensitivityApplied && std::fabs(sensitivityValue - zoomSensitivity) < kFovMatchTolerance)
-            {
-                LogZoomStatus("mouse-sensitivity-already-at-zoom-value");
+                LogZoomStatus("mouse-sensitivity-scaling-applied");
             }
             else
             {
-                sensitivityApplied = false;
                 LogZoomStatus("mouse-sensitivity-write-refused");
             }
         }
@@ -2492,6 +2560,8 @@ namespace
             }
             g_zoom.displayedValue = nextValue;
         }
+
+        UpdateZoomMouseSensitivityForFov(g_zoom.displayedValue);
 
         if (complete)
         {

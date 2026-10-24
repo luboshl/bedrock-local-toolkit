@@ -215,6 +215,23 @@ namespace
             "zoom easing is independent of the configured duration");
     }
 
+    void TestZoomMouseSensitivityInterpolation()
+    {
+        Check(GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 70.0f) == 0.24f,
+            "normal FOV keeps the Minecraft sensitivity option unchanged");
+        Check(std::fabs(GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 35.5f) - 0.18f) < 0.0001f,
+            "intermediate FOV smoothly interpolates the normalized sensitivity option");
+        Check(std::fabs(GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 1.0f) - 0.12f) < 0.0001f,
+            "minimum FOV reaches the configured 12 percent Minecraft sensitivity");
+        Check(std::fabs(GetZoomMouseSensitivityValue(0.20f, 20.0f, 70.0f, 1.0f) - 0.20f) < 0.0001f,
+            "20 percent in the INI maps to the same normalized Minecraft option value");
+        Check(GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 0.0f) == 0.12f &&
+            GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 120.0f) == 0.24f,
+            "sensitivity interpolation clamps FOV to its valid endpoints");
+        Check(GetZoomMouseSensitivityValue(0.0f, 12.0f, 70.0f, 1.0f) == 0.12f,
+            "a zero Minecraft setting can interpolate safely to the configured value");
+    }
+
     void TestZoomSensitivityRestoration()
     {
         float liveSensitivity = 0.50f;
@@ -782,6 +799,7 @@ int main()
         TestFovCounterLiveValue();
         TestScreenInput();
         TestZoomTransitionInterpolation();
+        TestZoomMouseSensitivityInterpolation();
         TestZoomSensitivityRestoration();
         TestZoomSensitivityRestorationAfterFovReplacement();
         TestZoomSensitivityOwnerReplacementPreserved();

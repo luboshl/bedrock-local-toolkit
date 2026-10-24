@@ -502,6 +502,7 @@ namespace
             const uintptr_t start = reinterpret_cast<uintptr_t>(memory);
             constexpr size_t wrapperOffset = 0x2000;
             constexpr size_t ownerOffset = 0x2400;
+            Pointer(0x190, start + wrapperOffset);
             Pointer(wrapperOffset, g_gameModuleBase + fov::kMouseSensitivityVtableRva);
             Pointer(wrapperOffset + 8, start + ownerOffset);
             String(ownerOffset + fov::kKeyOffset, "ctrl_sensitivity2");
@@ -785,10 +786,10 @@ int main()
             fixture.Value(10);
             g_zoom = {fixture.target, 70, true};
             g_zoom.displayedValue = 10.0f;
-            fixture.memory[1152] = 'x';
+            fixture.memory[0x5000 + 512 + fov::kKeyOffset] = 'x';
             Check(!ReadVerifiedTarget(fixture.target.options, verified, values), "wrong semantic key refused");
             Check(RestoreZoom() == FovRestoreResult::ValueChanged && fixture.Value() == 10, "reused object not overwritten");
-            fixture.memory[1152] = 'g';
+            fixture.memory[0x5000 + 512 + fov::kKeyOffset] = 'g';
             fixture.Value(70);
             float bad = .00105f;
             std::memcpy(fixture.memory + 1056, &bad, 4);

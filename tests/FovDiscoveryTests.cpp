@@ -41,8 +41,9 @@ namespace
     {
         TemporaryToolkitConfig config;
         Check(LoadZoomConfigFromPath(config.Path()), "load defaults without a config");
-        Check(g_zoomConfig.firstPersonFov == 15.0f && g_zoomConfig.thirdPersonFov == 28.0f,
-            "separate default FOVs for each perspective");
+        Check(g_zoomConfig.firstPersonFov == 25.0f && g_zoomConfig.thirdPersonFov == 29.0f &&
+            g_zoomConfig.transitionDurationMs == 75 && g_zoomConfig.mouseSensitivity == 45.0f &&
+            g_zoomConfig.zoomKey == 'T', "requested Zoom defaults");
         Check(g_zoomConfig.showNametagWhenHudHidden, "HUD-hidden nametag enabled by default");
         config.Set(L"nametag", L"show_when_hud_hidden", L" false ");
         Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.showNametagWhenHudHidden,

@@ -98,7 +98,7 @@ internal static class Program
 
     private static ZoomConfig LoadZoomConfig(string path)
     {
-        var defaults = new ZoomConfig(15f, 28f, 180, 12f, "C", "F7", "F6", "F8", "F9", "F10", true, false);
+        var defaults = new ZoomConfig(25f, 29f, 75, 45f, "T", "F7", "F6", "F8", "F9", "F10", true, false);
         if (!File.Exists(path)) return defaults;
 
         var zoomValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

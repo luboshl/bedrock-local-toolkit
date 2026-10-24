@@ -22,7 +22,7 @@ Use this software at your own risk. It is provided "as is", without warranties o
 | Always day | F6 | Keeps the rendered sun at noon and the moon below the horizon, with daytime sky colours. World time keeps progressing normally. The previous implementation failed its Fancy graphics test (issue #22). The updated rotation and camera paths pass automated tests and await an in-game visual retest. |
 | Nametag | F7 | Displays your name in both third-person views, including when F1 hides the HUD. Verified in a local game. |
 | Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
-| FOV counter | INI setting | Optional bottom-left `FOV: 70` display with white Minecraft-style text and a black, 65%-opaque rectangular background. Tracks the live FOV option, including Zoom transitions and wheel adjustments. In-game appearance still needs verification. |
+| FPS counter | INI setting | Bottom-left `FPS: 60` display with larger white Minecraft-style text and a black, 65%-opaque rectangular background. Counts game updates over one-second intervals; enabled by default and configurable. In-game appearance still needs verification. |
 
 Always day and Full Bright are enabled automatically after their profiles are verified, and Nametag is enabled when valid camera options are available. Their shortcuts toggle them off and on. Zoom preparation is automatic, but Zoom remains hold-to-use.
 
@@ -39,14 +39,15 @@ Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolki
 
 Under `[nametag]`, `show_when_hud_hidden=true` keeps your own name visible when F1 hides the HUD; it defaults to `true`. Set it to `false` to hide the name with the HUD. F7 still controls Nametag, and the name stays hidden in first person. Other actors' names and hovered-object labels retain their native HUD suppression. Restart the module to apply configuration changes.
 
-The FOV counter is disabled by default. In `bedrock-toolkit.ini` **next to the launcher**, set:
+The FPS counter is enabled by default. In `bedrock-toolkit.ini` **next to the launcher**, configure it with:
 
 ```ini
-[fov_counter]
+[fps_counter]
 enabled=true
+font_size=28
 ```
 
-Save `enabled=false` to hide it again. This setting alone reloads within about half a second without restarting the client or module; other settings still require a module restart. The counter is independent of F9 and appears only during foreground gameplay, including F1-hidden HUD. It shows the verified current FOV option rounded to the nearest degree, not additional camera effects such as sprint-induced projection changes, and hides when that option cannot be verified. It uses installed Minecraftia or privately loads Minecraft's own `data\fonts\Mojangles.ttf`; no fonts are bundled or downloaded. If neither font is available, the counter remains hidden.
+Set `enabled=false` to hide it or adjust `font_size` from 12 to 48. Both settings reload within about half a second without restarting the client or module; missing or invalid font sizes use 28, while invalid enabled values disable the counter. The counter is independent of F9 and appears only during foreground gameplay, including F1-hidden HUD. It counts calls to the supported build's game update function once per second. It uses installed Minecraftia or privately loads Minecraft's own `data\fonts\Mojangles.ttf`; no fonts are bundled or downloaded. If neither font is available, the counter remains hidden.
 
 Module shortcuts work only on verified gameplay screens. In chat, menus, and other text entry screens, keys and the mouse wheel remain available to Minecraft. Opening one of these screens restores the original FOV and ends active Zoom; release any held shortcut before using it again after returning to gameplay. This screen filtering passes isolated tests but still needs in-game verification.
 

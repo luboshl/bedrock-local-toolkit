@@ -95,55 +95,63 @@ namespace
         Check(!LoadZoomConfigFromPath(config.Path()), "duplicate shortcuts rejected");
     }
 
-    void TestFovCounterConfig()
+    void TestFpsCounterConfig()
     {
         TemporaryToolkitConfig config;
-        Check(!fovcounter::LoadEnabled(config.Path()), "FOV counter is disabled by default");
-        config.Set(L"FOV_COUNTER", L"ENABLED", L" TrUe ");
-        Check(fovcounter::LoadEnabled(config.Path()), "FOV counter accepts case and surrounding whitespace");
-        config.Set(L"fov_counter", L"enabled", L"false");
-        Check(!fovcounter::LoadEnabled(config.Path()), "live counter config disables without module reload");
-        config.Set(L"fov_counter", L"enabled", L"true");
+        Check(fpscounter::LoadEnabled(config.Path()), "FPS counter is enabled by default");
+        Check(fpscounter::LoadFontSize(config.Path()) == fpscounter::kDefaultFontSize,
+            "FPS font size has a readable default");
+        config.Set(L"FPS_COUNTER", L"ENABLED", L" false ");
+        Check(!fpscounter::LoadEnabled(config.Path()), "FPS counter accepts case and surrounding whitespace");
+        config.Set(L"fps_counter", L"enabled", L"true");
+        config.Set(L"fps_counter", L"font_size", L"36");
         config.Set(L"Zoom", L"FirstPersonFov", L"invalid");
         const ZoomConfig original = g_zoomConfig;
-        Check(fovcounter::LoadEnabled(config.Path()) &&
+        Check(fpscounter::LoadEnabled(config.Path()) && fpscounter::LoadFontSize(config.Path()) == 36 &&
             g_zoomConfig.firstPersonFov == original.firstPersonFov &&
             g_zoomConfig.zoomKey == original.zoomKey,
-            "live counter config is independent of restart-only Zoom and shortcut settings");
+            "live FPS settings are independent of restart-only Zoom and shortcut settings");
+        config.Set(L"fps_counter", L"font_size", L"12");
+        Check(fpscounter::LoadFontSize(config.Path()) == 12, "FPS font size accepts its minimum");
+        config.Set(L"fps_counter", L"font_size", L"48");
+        Check(fpscounter::LoadFontSize(config.Path()) == 48, "FPS font size accepts its maximum");
+        for (const wchar_t* invalid : {L"", L"11", L"49", L"36px", L"invalid"})
+        {
+            config.Set(L"fps_counter", L"font_size", invalid);
+            Check(fpscounter::LoadFontSize(config.Path()) == fpscounter::kDefaultFontSize,
+                "invalid FPS font size uses the default");
+        }
         for (const wchar_t* invalid : {L"", L"yes", L"1", L"true-but-truncated", L"invalid"})
         {
-            config.Set(L"fov_counter", L"enabled", invalid);
-            Check(!fovcounter::LoadEnabled(config.Path()), "invalid counter boolean fails closed");
+            config.Set(L"fps_counter", L"enabled", invalid);
+            Check(!fpscounter::LoadEnabled(config.Path()), "invalid FPS counter boolean fails closed");
         }
-        config.Set(L"fov_counter", L"enabled", nullptr);
-        Check(!fovcounter::LoadEnabled(config.Path()), "removed counter setting disables the counter");
+        config.Set(L"fps_counter", L"enabled", nullptr);
+        Check(fpscounter::LoadEnabled(config.Path()), "removed FPS counter setting uses the enabled default");
     }
 
-    void TestFovCounterPresentation()
+    void TestFpsCounterPresentation()
     {
-        Check(fovcounter::DisplayValue(70.0f) == 70 &&
-            fovcounter::DisplayValue(42.5f) == 43 &&
-            fovcounter::DisplayValue(1.0f) == 1 && fovcounter::DisplayValue(120.0f) == 120,
-            "counter rounds valid live values to the nearest degree");
-        for (const float value : {0.0f, 121.0f, (std::numeric_limits<float>::infinity)(),
-            (std::numeric_limits<float>::quiet_NaN)()})
-            Check(fovcounter::DisplayValue(value) == -1, "counter rejects invalid FOVs");
-        const RECT panel = fovcounter::PanelRect({-1920, 100, 0, 1180}, 100, 32);
+        Check(fpscounter::FpsValue(60, 1000) == 60 && fpscounter::FpsValue(30, 1000) == 30 &&
+            fpscounter::FpsValue(1, 50) == 20 && fpscounter::FpsValue(1, 0) == -1 &&
+            fpscounter::FpsValue(2000, 1000) == 1000,
+            "FPS measurement uses elapsed time and clamps implausibly high values");
+        const RECT panel = fpscounter::PanelRect({-1920, 100, 0, 1180}, 100, 32);
         Check(panel.left == -1912 && panel.bottom == 1172 && panel.right == -1812 && panel.top == 1140,
-            "counter anchors to the game client's bottom-left, including other monitors");
-        Check(fovcounter::Pixel(0) == 0xA6000000 && fovcounter::Pixel(255) == 0xFFFFFFFF,
+            "FPS counter anchors to the game client's bottom-left, including other monitors");
+        Check(fpscounter::Pixel(0) == 0xA6000000 && fpscounter::Pixel(255) == 0xFFFFFFFF,
             "background has 65 percent opacity without fading the white text");
-        const uint32_t pixel = fovcounter::Pixel(128);
+        const uint32_t pixel = fpscounter::Pixel(128);
         Check((pixel >> 24) >= (pixel & 0xFF), "text edge pixels use premultiplied alpha");
     }
 
-    void TestFovCounterShutdown()
+    void TestFpsCounterShutdown()
     {
         TemporaryToolkitConfig config;
-        HWND gameWindow = CreateWindowExW(0, L"STATIC", L"FOV counter test game", WS_OVERLAPPED,
+        HWND gameWindow = CreateWindowExW(0, L"STATIC", L"FPS counter test game", WS_OVERLAPPED,
             0, 0, 640, 480, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Check(gameWindow != nullptr, "counter test creates a target window for its DPI context");
-        HWND foregroundWindow = CreateWindowExW(0, L"STATIC", L"FOV counter test foreground",
+        HWND foregroundWindow = CreateWindowExW(0, L"STATIC", L"FPS counter test foreground",
             WS_OVERLAPPED, 0, 0, 320, 240, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Check(foregroundWindow != nullptr, "counter test creates a separate foreground window");
         struct WindowScope
@@ -152,13 +160,13 @@ namespace
             ~WindowScope() { if (window != nullptr) DestroyWindow(window); }
         } windowScope{ gameWindow };
         WindowScope foregroundWindowScope{ foregroundWindow };
-        Check(fovcounter::IsGameForegroundWindow(foregroundWindow, gameWindow),
+        Check(fpscounter::IsGameForegroundWindow(foregroundWindow, gameWindow),
             "foreground windows owned by the game process keep the counter visible");
-        Check(!fovcounter::IsGameForegroundWindow(nullptr, gameWindow),
+        Check(!fpscounter::IsGameForegroundWindow(nullptr, gameWindow),
             "counter hides when no foreground window exists");
         struct CounterScope
         {
-            fovcounter::Counter counter;
+            fpscounter::Counter counter;
             ~CounterScope()
             {
                 counter.BeginShutdown();
@@ -167,25 +175,30 @@ namespace
         } scope;
         auto& counter = scope.counter;
         Check(counter.Start(GetModuleHandleW(nullptr), config.Path()), "counter thread starts");
-        counter.Publish(gameWindow, -1);
+        counter.Publish(gameWindow, false);
         const ULONGLONG deadline = GetTickCount64() + 5'000;
         while (counter.Window() == nullptr)
         {
             Check(GetTickCount64() < deadline, "counter creates its independent overlay");
             Sleep(1);
         }
-        Check(!IsWindowVisible(counter.Window()) && !counter.Enabled(),
-            "default counter stays hidden independently of the status indicator");
-        config.Set(L"fov_counter", L"enabled", L"true");
         while (!counter.Enabled())
         {
-            Check(GetTickCount64() < deadline, "counter thread reloads enabled without restarting");
+            Check(GetTickCount64() < deadline, "counter thread loads its enabled-by-default setting");
             Sleep(1);
         }
-        config.Set(L"fov_counter", L"enabled", L"false");
+        Check(!IsWindowVisible(counter.Window()) && counter.Enabled(),
+            "enabled-by-default counter stays hidden outside gameplay");
+        config.Set(L"fps_counter", L"enabled", L"false");
         while (counter.Enabled())
         {
             Check(GetTickCount64() < deadline, "counter thread reloads disabled without restarting");
+            Sleep(1);
+        }
+        config.Set(L"fps_counter", L"enabled", L"true");
+        while (!counter.Enabled())
+        {
+            Check(GetTickCount64() < deadline, "counter thread reloads enabled without restarting");
             Sleep(1);
         }
         counter.BeginShutdown();
@@ -828,35 +841,6 @@ namespace
         g_zoomRestorePending = false;
     }
 
-    void TestFovCounterLiveValue()
-    {
-        Fixture fixture;
-        g_fovScan.result = FovScanResult::Unique;
-        g_fovScan.foundTarget = fixture.target;
-        Check(ReadFovCounterValue() == 70, "counter reads the verified live FOV");
-        fixture.Value(85.0f);
-        Check(ReadFovCounterValue() == 85, "counter follows in-game FOV setting changes");
-        const float minimum = 1.0f;
-        std::memcpy(fixture.memory + 1040, &minimum, sizeof(minimum));
-        fixture.Value(15.0f);
-        Check(ReadFovCounterValue() == 15, "counter follows live Zoom rather than its configured target");
-        fixture.Value(42.5f);
-        Check(ReadFovCounterValue() == 43, "counter follows intermediate Zoom transition values");
-        g_fovScan.foundTarget.owner = 0;
-        Check(ReadFovCounterValue() == -1, "counter hides on changed target identity");
-        g_fovScan.foundTarget = fixture.target;
-        fixture.Value((std::numeric_limits<float>::quiet_NaN)());
-        Check(ReadFovCounterValue() == -1, "counter hides on unreadable or invalid live FOV");
-        g_fovScan.result = FovScanResult::Multiple;
-        fixture.Value(70.0f);
-        Check(ReadFovCounterValue() == -1, "ambiguous discovery cannot display a guessed FOV");
-        g_fovScan.result = FovScanResult::Unique;
-        g_supportedBuild = false;
-        Check(ReadFovCounterValue() == -1, "counter refuses an unsupported build");
-        g_supportedBuild = true;
-        g_fovScan = {};
-    }
-
     void TestZoomTransitionTiming()
     {
         Fixture fixture;
@@ -928,10 +912,9 @@ int main()
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
         TestToolkitConfig();
-        TestFovCounterConfig();
-        TestFovCounterPresentation();
-        TestFovCounterShutdown();
-        TestFovCounterLiveValue();
+        TestFpsCounterConfig();
+        TestFpsCounterPresentation();
+        TestFpsCounterShutdown();
         TestScreenInput();
         TestZoomTransitionInterpolation();
         TestZoomMouseSensitivityInterpolation();

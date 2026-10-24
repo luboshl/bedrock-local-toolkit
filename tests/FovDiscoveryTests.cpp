@@ -541,6 +541,47 @@ namespace
         g_zoomSensitivity = {};
     }
 
+    void TestZoomSensitivityRestorationWhenFovIsUnreadable()
+    {
+        Fixture fixture;
+        fixture.AddSensitivity();
+
+        const uintptr_t start = reinterpret_cast<uintptr_t>(fixture.memory);
+        const uintptr_t inaccessibleFovPattern = start + 0x8000;
+        DWORD previousProtection = 0;
+        Check(VirtualProtect(reinterpret_cast<void*>(inaccessibleFovPattern), 0x1000,
+            PAGE_NOACCESS, &previousProtection) != FALSE, "make FOV wrapper unreadable");
+
+        g_zoom = {};
+        g_zoom.target = fixture.target;
+        g_zoom.target.pattern = inaccessibleFovPattern;
+        g_zoom.active = true;
+        g_zoom.originalValue = 70.0f;
+        g_zoom.displayedValue = 10.0f;
+        g_zoom.originalMinimumValue = 30.0f;
+        g_zoomRestorePending = false;
+
+        g_zoomSensitivity = {fixture.target, fixture.sensitivityValueAddress, 0.50f, 0.12f, true};
+        const float zoomSensitivity = 0.12f;
+        std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomSensitivity,
+            sizeof(zoomSensitivity));
+
+        Check(RestoreZoom() == FovRestoreResult::Failed && g_zoom.active && g_zoomRestorePending,
+            "unreadable FOV keeps zoom restoration pending");
+        float restoredSensitivity = 0.0f;
+        std::memcpy(&restoredSensitivity, reinterpret_cast<void*>(fixture.sensitivityValueAddress),
+            sizeof(restoredSensitivity));
+        Check(restoredSensitivity == 0.50f && !g_zoomSensitivity.active,
+            "unreadable FOV still restores temporary mouse sensitivity");
+
+        DWORD ignoredProtection = 0;
+        VirtualProtect(reinterpret_cast<void*>(inaccessibleFovPattern), 0x1000,
+            previousProtection, &ignoredProtection);
+        g_zoom = {};
+        g_zoomSensitivity = {};
+        g_zoomRestorePending = false;
+    }
+
     void TestZoomWheelTransitionRetargeting()
     {
         Fixture fixture;
@@ -691,6 +732,7 @@ int main()
         TestZoomTransitionInterpolation();
         TestZoomSensitivityRestoration();
         TestZoomSensitivityRestorationAfterFovReplacement();
+        TestZoomSensitivityRestorationWhenFovIsUnreadable();
         TestDeferredZoomDiagnostics();
         TestBlockedDiagnosticWriter();
         TestPendingRestoreDiagnostics();

@@ -696,6 +696,15 @@ namespace
         return FovRestoreResult::Restored;
     }
 
+    FovRestoreResult FailZoomRestore()
+    {
+        // FOV and mouse sensitivity are separate targets. A failed FOV read or
+        // write must not leave the temporary sensitivity in place.
+        RestoreZoomSensitivity();
+        g_zoomRestorePending = true;
+        return FovRestoreResult::Failed;
+    }
+
     bool ParseUnsignedValue(const std::wstring& text, uintptr_t& value)
     {
         if (text.empty() || text[0] < L'0' || text[0] > L'9')
@@ -1191,8 +1200,7 @@ namespace
         float values[5]{};
         if (!ReadFovPattern(g_zoom.target.pattern, values))
         {
-            g_zoomRestorePending = true;
-            return FovRestoreResult::Failed;
+            return FailZoomRestore();
         }
 
         fov::Target current;
@@ -1209,8 +1217,7 @@ namespace
         {
             if (!CompareExchangeFloat(valueAddress, g_zoom.displayedValue, g_zoom.originalValue))
             {
-                g_zoomRestorePending = true;
-                return FovRestoreResult::Failed;
+                return FailZoomRestore();
             }
         }
         else if (!valueIsOriginal)
@@ -1220,8 +1227,7 @@ namespace
             if (std::fabs(values[0] - kZoomMinimumFov) < kFovMatchTolerance &&
                 !CompareExchangeFloat(minimumAddress, kZoomMinimumFov, g_zoom.originalMinimumValue))
             {
-                g_zoomRestorePending = true;
-                return FovRestoreResult::Failed;
+                return FailZoomRestore();
             }
             return CompleteZoomRestore(FovRestoreResult::ValueChanged);
         }
@@ -1229,8 +1235,7 @@ namespace
         if (std::fabs(values[0] - kZoomMinimumFov) < kFovMatchTolerance &&
             !CompareExchangeFloat(minimumAddress, kZoomMinimumFov, g_zoom.originalMinimumValue))
         {
-            g_zoomRestorePending = true;
-            return FovRestoreResult::Failed;
+            return FailZoomRestore();
         }
 
         float verify[5]{};
@@ -1241,8 +1246,7 @@ namespace
             return CompleteZoomRestore(FovRestoreResult::Restored);
         }
 
-        g_zoomRestorePending = true;
-        return FovRestoreResult::Failed;
+        return FailZoomRestore();
     }
 
     bool StartFovScan();

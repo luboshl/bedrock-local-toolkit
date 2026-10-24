@@ -489,27 +489,26 @@ namespace
         return true;
     }
 
-    bool ReadVerifiedMouseSensitivity(const fov::Target& expectedTarget, uintptr_t& valueAddress, float& value)
+    bool ReadVerifiedMouseSensitivity(uintptr_t options, uintptr_t& valueAddress, float& value)
     {
-        if (!g_supportedBuild || expectedTarget.options == 0 ||
-            expectedTarget.options > (std::numeric_limits<uintptr_t>::max)() - fov::kOptionsSearchBytes)
+        if (!g_supportedBuild || options == 0 || (options & 7) != 0 ||
+            options > (std::numeric_limits<uintptr_t>::max)() - fov::kOptionsSearchBytes)
             return false;
 
-        // Resolve the named mouse sensitivity slider from the same verified
-        // Options object. A numeric value at an unverified offset is not enough.
-        fov::Target currentTarget;
-        float fovValues[5]{};
-        if (!ReadVerifiedTarget(expectedTarget.options, currentTarget, fovValues) ||
-            !fov::SameTarget(currentTarget, expectedTarget))
+        uintptr_t optionsVtable = 0;
+        if (!ReadPrivateMemory(options, &optionsVtable, sizeof(optionsVtable)) ||
+            optionsVtable != g_gameModuleBase + fov::kOptionsVtableRva)
             return false;
 
+        // Resolve the named mouse sensitivity slider from the verified Options
+        // object independently of the current FOV target.
         unsigned int matches = 0;
         float foundValue = 0.0f;
         for (size_t offset = 0; offset + sizeof(uintptr_t) <= fov::kOptionsSearchBytes;
             offset += sizeof(uintptr_t))
         {
             uintptr_t wrapper = 0;
-            if (!ReadPrivateMemory(expectedTarget.options + offset, &wrapper, sizeof(wrapper))) return false;
+            if (!ReadPrivateMemory(options + offset, &wrapper, sizeof(wrapper))) return false;
             if (wrapper == 0 || (wrapper & 7) != 0 ||
                 wrapper > (std::numeric_limits<uintptr_t>::max)() - fov::kPatternOffset) continue;
 
@@ -632,16 +631,24 @@ namespace
         Failed
     };
 
+    bool SameFloatBits(float left, float right)
+    {
+        uint32_t leftBits = 0, rightBits = 0;
+        std::memcpy(&leftBits, &left, sizeof(leftBits));
+        std::memcpy(&rightBits, &right, sizeof(rightBits));
+        return leftBits == rightBits;
+    }
+
     SensitivityRestoreResult RestoreZoomSensitivityValue(uintptr_t address, float originalValue, float zoomValue)
     {
         float currentValue = 0.0f;
         if (!ReadPrivateMemory(address, &currentValue, sizeof(currentValue)))
             return SensitivityRestoreResult::Failed;
         if (!std::isfinite(currentValue)) return SensitivityRestoreResult::ValueChanged;
-        if (std::fabs(currentValue - originalValue) < kFovMatchTolerance)
+        if (SameFloatBits(currentValue, originalValue))
             return SensitivityRestoreResult::Restored;
-        if (std::fabs(currentValue - zoomValue) < kFovMatchTolerance)
-            return CompareExchangeFloat(address, currentValue, originalValue) ?
+        if (SameFloatBits(currentValue, zoomValue))
+            return CompareExchangeFloat(address, zoomValue, originalValue) ?
                 SensitivityRestoreResult::Restored : SensitivityRestoreResult::Failed;
         return SensitivityRestoreResult::ValueChanged;
     }
@@ -651,7 +658,7 @@ namespace
         if (!g_zoomSensitivity.active) return SensitivityRestoreResult::NotActive;
         uintptr_t currentAddress = 0;
         float currentValue = 0.0f;
-        if (!ReadVerifiedMouseSensitivity(g_zoomSensitivity.target, currentAddress, currentValue))
+        if (!ReadVerifiedMouseSensitivity(g_zoomSensitivity.target.options, currentAddress, currentValue))
             return SensitivityRestoreResult::Failed;
         if (currentAddress != g_zoomSensitivity.valueAddress)
         {
@@ -1296,7 +1303,7 @@ namespace
 
         uintptr_t sensitivityValueAddress = 0;
         float sensitivityValue = 0.0f;
-        bool sensitivityApplied = ReadVerifiedMouseSensitivity(target, sensitivityValueAddress, sensitivityValue);
+        bool sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, sensitivityValueAddress, sensitivityValue);
         g_zoomSensitivity = {};
         if (!sensitivityApplied)
         {
@@ -1321,7 +1328,7 @@ namespace
             const float zoomSensitivity = g_zoomConfig.mouseSensitivity * kMouseSensitivityPercentScale;
             uintptr_t currentSensitivityAddress = 0;
             float currentSensitivityValue = 0.0f;
-            sensitivityApplied = ReadVerifiedMouseSensitivity(target, currentSensitivityAddress,
+            sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, currentSensitivityAddress,
                 currentSensitivityValue) && currentSensitivityAddress == sensitivityValueAddress &&
                 std::fabs(currentSensitivityValue - sensitivityValue) < kFovMatchTolerance;
             if (std::fabs(sensitivityValue - zoomSensitivity) >= kFovMatchTolerance &&

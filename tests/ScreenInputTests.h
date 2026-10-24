@@ -113,7 +113,7 @@ namespace
             "live gameplay topology: HUD/crosshair and shared cubemap/debug/toast with zero transition flags");
 
         g_zoomConfig = {};
-        for (const int key : {int{'C'}, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10})
+        for (const int key : {g_zoomConfig.zoomKey, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10})
         {
             ObserveShortcut(key, false, screens::AllowsShortcuts());
             ObserveShortcut(key, true, screens::AllowsShortcuts());
@@ -127,13 +127,13 @@ namespace
             fixture.SetStack(fixture.local, fixture.entries.data(), 4, 4);
             const bool allowed = screens::AllowsShortcuts();
             Check(!allowed, "live local menu above HUD denies all shortcuts");
-            ObserveShortcut('C', true, allowed);
-            Check(ShortcutNeedsRelease('C') && !ShouldHideZoomKeyFromGame(allowed),
+            ObserveShortcut(g_zoomConfig.zoomKey, true, allowed);
+            Check(ShortcutNeedsRelease(g_zoomConfig.zoomKey) && !ShouldHideZoomKeyFromGame(allowed),
                 "native chat topology passes its letter and latches the held Zoom shortcut");
             fixture.SetStack(fixture.local, fixture.entries.data(), 3, 4);
-            Check(screens::AllowsShortcuts() && ShortcutNeedsRelease('C'),
+            Check(screens::AllowsShortcuts() && ShortcutNeedsRelease(g_zoomConfig.zoomKey),
                 "closing native chat requires a release before Zoom can resume");
-            ObserveShortcut('C', false, true);
+            ObserveShortcut(g_zoomConfig.zoomKey, false, true);
             fixture.SetStack(fixture.global, shared.data(), 4, 4);
             Check(!screens::AllowsShortcuts(), "shared menu above native overlays denies gameplay shortcuts");
             fixture.SetStack(fixture.global, shared.data(), 3, 4);
@@ -193,14 +193,14 @@ namespace
             Check(!allowed, "text input, menu and unknown screens deny shortcuts");
             RAWINPUT input{};
             input.header.dwType = RIM_TYPEKEYBOARD;
-            input.data.keyboard.VKey = 'C';
+            input.data.keyboard.VKey = static_cast<USHORT>(g_zoomConfig.zoomKey);
             input.data.keyboard.MakeCode = 46;
             input.data.keyboard.Message = WM_KEYDOWN;
             RAWINPUT copy = input;
             FilterRawInputZoomKey(input, allowed);
             Check(std::memcmp(&input, &copy, sizeof(input)) == 0, "chat character survives Raw Input unchanged");
             std::array<GameInputKeyState, 2> keys{};
-            keys[0].virtualKey = 'C';
+            keys[0].virtualKey = static_cast<uint8_t>(g_zoomConfig.zoomKey);
             keys[1].virtualKey = 'A';
             const auto originalKeys = keys;
             Check(FilterZoomKey(keys.data(), 2, 2, allowed) == 2 &&
@@ -215,7 +215,7 @@ namespace
         }
         fixture.SetName("hud_screen");
         Check(screens::AllowsShortcuts(), "chat close returns to gameplay");
-        for (const int key : {int{'C'}, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10})
+        for (const int key : {g_zoomConfig.zoomKey, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10})
         {
             ObserveShortcut(key, true, false);
             Check(ShortcutNeedsRelease(key), "shortcut held on a text screen is latched");
@@ -228,19 +228,19 @@ namespace
         }
         RAWINPUT input{};
         input.header.dwType = RIM_TYPEKEYBOARD;
-        input.data.keyboard.VKey = 'C';
+        input.data.keyboard.VKey = static_cast<USHORT>(g_zoomConfig.zoomKey);
         FilterRawInputZoomKey(input, screens::AllowsShortcuts());
         Check(input.data.keyboard.VKey == 0 && input.data.keyboard.Flags == RI_KEY_BREAK,
             "gameplay Zoom key remains captured through Raw Input");
         std::array<GameInputKeyState, 2> keys{};
-        keys[0].virtualKey = 'C';
+        keys[0].virtualKey = static_cast<uint8_t>(g_zoomConfig.zoomKey);
         keys[1].virtualKey = 'A';
         Check(FilterZoomKey(keys.data(), 2, 2, screens::AllowsShortcuts()) == 1 && keys[0].virtualKey == 'A',
             "gameplay Zoom key is removed while other GameInput keys survive");
         Check(ShouldHideZoomKeyFromGame(screens::AllowsShortcuts()), "gameplay WinAPI/message key capture");
-        ObserveShortcut('C', true, false);
+        ObserveShortcut(g_zoomConfig.zoomKey, true, false);
         Check(!ShouldHideZoomKeyFromGame(screens::AllowsShortcuts()), "held chat key is also passed after chat closes");
-        ObserveShortcut('C', false, true);
+        ObserveShortcut(g_zoomConfig.zoomKey, false, true);
 
         {
             ScreenFixture menu;

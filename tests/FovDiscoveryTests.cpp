@@ -41,8 +41,9 @@ namespace
     {
         TemporaryToolkitConfig config;
         Check(LoadZoomConfigFromPath(config.Path()), "load defaults without a config");
-        Check(g_zoomConfig.firstPersonFov == 15.0f && g_zoomConfig.thirdPersonFov == 28.0f,
-            "separate default FOVs for each perspective");
+        Check(g_zoomConfig.firstPersonFov == 25.0f && g_zoomConfig.thirdPersonFov == 29.0f &&
+            g_zoomConfig.transitionDurationMs == 75 && g_zoomConfig.mouseSensitivity == 45.0f &&
+            g_zoomConfig.zoomKey == 'T', "requested Zoom defaults");
         Check(g_zoomConfig.showNametagWhenHudHidden, "HUD-hidden nametag enabled by default");
         config.Set(L"nametag", L"show_when_hud_hidden", L" false ");
         Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.showNametagWhenHudHidden,
@@ -139,6 +140,22 @@ namespace
     void TestFovCounterShutdown()
     {
         TemporaryToolkitConfig config;
+        HWND gameWindow = CreateWindowExW(0, L"STATIC", L"FOV counter test game", WS_OVERLAPPED,
+            0, 0, 640, 480, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        Check(gameWindow != nullptr, "counter test creates a target window for its DPI context");
+        HWND foregroundWindow = CreateWindowExW(0, L"STATIC", L"FOV counter test foreground",
+            WS_OVERLAPPED, 0, 0, 320, 240, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        Check(foregroundWindow != nullptr, "counter test creates a separate foreground window");
+        struct WindowScope
+        {
+            HWND window;
+            ~WindowScope() { if (window != nullptr) DestroyWindow(window); }
+        } windowScope{ gameWindow };
+        WindowScope foregroundWindowScope{ foregroundWindow };
+        Check(fovcounter::IsGameForegroundWindow(foregroundWindow, gameWindow),
+            "foreground windows owned by the game process keep the counter visible");
+        Check(!fovcounter::IsGameForegroundWindow(nullptr, gameWindow),
+            "counter hides when no foreground window exists");
         struct CounterScope
         {
             fovcounter::Counter counter;
@@ -150,6 +167,7 @@ namespace
         } scope;
         auto& counter = scope.counter;
         Check(counter.Start(GetModuleHandleW(nullptr), config.Path()), "counter thread starts");
+        counter.Publish(gameWindow, -1);
         const ULONGLONG deadline = GetTickCount64() + 5'000;
         while (counter.Window() == nullptr)
         {

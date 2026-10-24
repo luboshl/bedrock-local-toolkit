@@ -36,8 +36,8 @@ namespace
     constexpr COLORREF kPanelColor = RGB(20, 34, 30);
     constexpr wchar_t kWindowClassName[] = L"MinecraftClient.GameMod.LocalOverlay";
     constexpr wchar_t kExpectedGameModuleName[] = L"Minecraft.Windows.exe";
-    constexpr float kDefaultFirstPersonZoomFov = 15.0f;
-    constexpr float kDefaultThirdPersonZoomFov = 28.0f;
+    constexpr float kDefaultFirstPersonZoomFov = 25.0f;
+    constexpr float kDefaultThirdPersonZoomFov = 29.0f;
     constexpr float kZoomMinimumFov = 1.0f;
     constexpr float kZoomMaximumFov = 120.0f;
     constexpr float kZoomWheelStep = 5.0f;
@@ -46,7 +46,7 @@ namespace
     constexpr float kMouseSensitivityRuntimeMinimum = 0.0f;
     constexpr float kMouseSensitivityRuntimeMaximum = 1.0f;
     constexpr float kMouseSensitivityPercentScale = 0.01f;
-    constexpr ULONGLONG kDefaultZoomTransitionDurationMs = 180;
+    constexpr ULONGLONG kDefaultZoomTransitionDurationMs = 75;
 
     double ZoomTimeMs()
     {
@@ -85,9 +85,9 @@ namespace
         float firstPersonFov = kDefaultFirstPersonZoomFov;
         float thirdPersonFov = kDefaultThirdPersonZoomFov;
         ULONGLONG transitionDurationMs = kDefaultZoomTransitionDurationMs;
-        float mouseSensitivity = 12.0f;
+        float mouseSensitivity = 45.0f;
         bool showNametagWhenHudHidden = true;
-        int zoomKey = 'C';
+        int zoomKey = 'T';
         int nametagKey = VK_F7;
         int alwaysDayKey = VK_F6;
         int fullBrightKey = VK_F8;

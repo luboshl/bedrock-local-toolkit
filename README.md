@@ -18,7 +18,7 @@ Use this software at your own risk. It is provided "as is", without warranties o
 
 | Feature | Key (default) | Details and verification |
 | --- | --- | --- |
-| Zoom | C (hold), mouse wheel | Smooth local FOV transition; defaults to 15° in first person and 28° in third person. The wheel adjusts the target FOV. Zoom temporarily applies the configured mouse sensitivity through the uniquely verified game option and restores it safely afterward. Default C Zoom and chat filtering were verified in a local game; smoothness at very low FOV, wheel behavior, and desktop mouse response still need a dedicated check. |
+| Zoom | T (hold), mouse wheel | Smooth local FOV transition; defaults to 25° in first person and 29° in third person, with a 75 ms transition and 45% mouse sensitivity. The wheel adjusts the target FOV. Zoom temporarily applies the configured sensitivity through the uniquely verified game option and restores it only while that same option remains bound to the same value address and still contains the value written by the module. Cumulative GameInput mouse coordinates remain unchanged. The former default C Zoom and chat filtering were verified in a local game; the new default key, low-FOV smoothness, latest wheel behavior, and desktop mouse response still need dedicated checks. |
 | Always day | F6 | Keeps the rendered sun at noon and the moon below the horizon, with daytime sky colours. World time keeps progressing normally. The previous implementation failed its Fancy graphics test (issue #22). The updated rotation and camera paths pass automated tests and await an in-game visual retest. |
 | Nametag | F7 | Displays your name in both third-person views, including when F1 hides the HUD. Verified in a local game. |
 | Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
@@ -33,7 +33,7 @@ Always day and Full Bright are enabled automatically after their profiles are ve
 | Status indicator | F9 | Shows or hides the local status indicator. |
 | Safe detach | F10 | Restores modified values and hooks, then detaches the module when restoration is safe. |
 
-Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Set `FirstPersonFov` and `ThirdPersonFov` separately under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script copies the configuration next to the launcher. The older `Fov` setting remains supported as a fallback for both perspectives.
+Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Set `FirstPersonFov` and `ThirdPersonFov` separately under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script installs this default configuration next to the launcher without overwriting an existing one. To reset settings to defaults, remove `bedrock-toolkit.ini` next to the launcher and rebuild; missing settings also use the defaults. The older `Fov` setting remains supported as a fallback for both perspectives.
 
 `MouseSensitivity` under `[Zoom]` sets the temporary in-game mouse sensitivity while Zoom is active, as a percentage from 0 to 100. GameInput cumulative mouse coordinates are passed through unchanged so low sensitivity does not discard small input deltas. If the sensitivity option cannot be uniquely verified, Zoom continues without changing it.
 
@@ -91,7 +91,7 @@ From the repository root, run:
 
 This builds the C++ game module and C# launcher, then runs the isolated automated tests. Tests cover implementation details against synthetic memory; passing tests do not prove that behavior works in a live game. See [`SPECIFICATION.md`](SPECIFICATION.md) for the security requirements and verification boundaries.
 
-The gameplay/Zoom stutter fix uses precise animation timing, removes synchronous input diagnostics and repeated hook scans, and limits indicator redraws. Low-FOV Zoom now adjusts the verified sensitivity option directly while preserving cumulative mouse readings (issue #50). Automated checks cover transition timing, sensitivity restoration, and deferred diagnostics; camera movement at FOV 1 still requires an in-game retest (issues #30 and #50).
+The gameplay/Zoom stutter fix uses precise animation timing, removes synchronous input diagnostics and repeated hook scans, and limits indicator redraws. Low-FOV Zoom now adjusts the verified sensitivity option directly while preserving cumulative mouse readings (issue #50). Automated checks cover transition timing, sensitivity restoration, and deferred diagnostics; sprint-jumping and camera movement at FOV 1 still require an in-game retest (issues #30 and #50).
 
 ## Publish a release
 

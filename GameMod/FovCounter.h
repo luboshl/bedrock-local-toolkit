@@ -40,6 +40,20 @@ namespace fovcounter
         return {left, bottom - static_cast<LONG>(height), left + static_cast<LONG>(width), bottom};
     }
 
+    inline bool IsGameForegroundWindow(HWND foreground, HWND game)
+    {
+        if (foreground == nullptr || game == nullptr) return false;
+
+        DWORD foregroundProcessId = 0;
+        DWORD gameProcessId = 0;
+        if (GetWindowThreadProcessId(foreground, &foregroundProcessId) == 0 ||
+            GetWindowThreadProcessId(game, &gameProcessId) == 0) return false;
+        if (foregroundProcessId == gameProcessId) return true;
+
+        const HWND foregroundRoot = GetAncestor(foreground, GA_ROOTOWNER);
+        return foregroundRoot == game || IsChild(foregroundRoot, game) || IsChild(game, foregroundRoot);
+    }
+
     inline uint32_t Pixel(BYTE coverage)
     {
         // White text over a translucent black panel, in premultiplied BGRA.
@@ -189,15 +203,42 @@ namespace fovcounter
 
         void Run()
         {
+            HWND initialGameWindow = nullptr;
+            while ((initialGameWindow = gameWindow_.load()) == nullptr || !IsWindow(initialGameWindow))
+            {
+                if (WaitForSingleObject(stop_, 16) != WAIT_TIMEOUT) return;
+            }
+
+            // The counter has its own thread, so it does not inherit the game
+            // window's thread DPI context. Use the target window's context
+            // before creating the popup and converting client coordinates to
+            // screen coordinates; otherwise Windows may virtualize those
+            // coordinates and place the layered window away from the game.
+            const DPI_AWARENESS_CONTEXT gameDpiContext = GetWindowDpiAwarenessContext(initialGameWindow);
+            if (gameDpiContext == nullptr) return;
+            const DPI_AWARENESS_CONTEXT previousDpiContext =
+                SetThreadDpiAwarenessContext(gameDpiContext);
+            if (previousDpiContext == nullptr) return;
+
             WNDCLASSEXW windowClass{};
             windowClass.cbSize = sizeof(windowClass);
             windowClass.hInstance = module_;
             windowClass.lpfnWndProc = WindowProc;
             windowClass.lpszClassName = kWindowClass;
-            if (RegisterClassExW(&windowClass) == 0) return;
+            if (RegisterClassExW(&windowClass) == 0)
+            {
+                SetThreadDpiAwarenessContext(previousDpiContext);
+                return;
+            }
             HWND window = CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                 kWindowClass, L"FOV counter", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, module_, nullptr);
+            if (window == nullptr)
+            {
+                UnregisterClassW(kWindowClass, module_);
+                SetThreadDpiAwarenessContext(previousDpiContext);
+                return;
+            }
             window_.store(window);
             HDC dc = CreateCompatibleDC(nullptr);
             HFONT font = nullptr;
@@ -226,13 +267,11 @@ namespace fovcounter
                 const HWND game = gameWindow_.load();
                 const int value = value_.load();
                 const HWND foreground = GetForegroundWindow();
-                const HWND foregroundRoot = GetAncestor(foreground, GA_ROOTOWNER);
                 RECT client{};
                 POINT origin{};
                 const bool visible = enabled_.load() && font != nullptr && value >= 0 &&
                     game != nullptr && IsWindowVisible(game) && !IsIconic(game) &&
-                    (foreground == game || foregroundRoot == game ||
-                        IsChild(foregroundRoot, game) || IsChild(game, foregroundRoot)) &&
+                    IsGameForegroundWindow(foreground, game) &&
                     GetClientRect(game, &client) &&
                     ClientToScreen(game, &origin);
                 if (visible)
@@ -262,6 +301,7 @@ namespace fovcounter
             if (dc != nullptr) DeleteDC(dc);
             if (!fontPath_.empty()) RemoveFontResourceExW(fontPath_.c_str(), FR_PRIVATE, nullptr);
             UnregisterClassW(kWindowClass, module_);
+            SetThreadDpiAwarenessContext(previousDpiContext);
         }
 
         HMODULE module_ = nullptr;

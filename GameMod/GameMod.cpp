@@ -172,7 +172,10 @@ namespace
     struct ZoomSensitivityState
     {
         fov::Target target;
+        uintptr_t owner = 0;
+        uintptr_t valueAddress = 0;
         float originalValue = 0.0f;
+        float zoomValue = 0.0f;
         bool active = false;
     };
 
@@ -225,10 +228,6 @@ namespace
     volatile LONG g_rawWheelEventLogged = 0;
     volatile LONG g_pointerWheelEventLogged = 0;
     volatile LONG g_messageWheelEventLogged = 0;
-    // GameInput exposes cumulative relative mouse movement. Scaling the
-    // cumulative coordinates makes the game's next-reading delta smaller.
-    volatile LONG g_zoomMouseScalingActive = 0;
-    volatile LONG g_zoomMouseScaleBasisPoints = 10'000;
     using GetRawInputDataFunction = UINT(WINAPI*)(HRAWINPUT, UINT, LPVOID, PUINT, UINT);
     using GetRawInputBufferFunction = UINT(WINAPI*)(PRAWINPUT, PUINT, UINT);
     using GameInputCreateFunction = HRESULT(WINAPI*)(IGameInput**);
@@ -249,18 +248,6 @@ namespace
     };
     static_assert(sizeof(GameInputMouseStateV2Compat) == 0x38);
     static_assert(offsetof(GameInputMouseStateV2Compat, wheelY) == 0x30);
-    struct MousePositionScaleState
-    {
-        bool initialized = false;
-        int64_t lastInput = 0;
-        long double filteredPosition = 0.0L;
-    };
-    struct PerDeviceMousePositionScaleState
-    {
-        uintptr_t device = 0;
-        MousePositionScaleState x;
-        MousePositionScaleState y;
-    };
     using NativeMouseWheelFunction = void(__fastcall*)(float);
     using NativeMouseEventFunction = void(__fastcall*)(void*, int, int, int, int, int, int, bool);
     NativeMouseWheelFunction g_originalNativeMouseWheel = nullptr;
@@ -281,8 +268,6 @@ namespace
         bool disabled = false;
     };
     NativeMouseHookState g_nativeMouseHookStates[2]{};
-    SRWLOCK g_mousePositionScaleLock = SRWLOCK_INIT;
-    PerDeviceMousePositionScaleState g_gameInputMousePositionScale[64]{};
     using GameInputV2GetMouseStateFunction = bool(STDMETHODCALLTYPE*)(void*, GameInputMouseStateV2Compat*);
     using GameInputV2GetKeyStateFunction = uint32_t(STDMETHODCALLTYPE*)(void*, uint32_t, GameInputKeyState*);
     GetRawInputDataFunction g_originalGetRawInputData = nullptr;
@@ -505,27 +490,28 @@ namespace
         return true;
     }
 
-    bool ReadVerifiedMouseSensitivity(const fov::Target& expectedTarget, float& value)
+    bool ReadVerifiedMouseSensitivity(uintptr_t options, uintptr_t& owner, uintptr_t& valueAddress, float& value)
     {
-        if (!g_supportedBuild || expectedTarget.options == 0 ||
-            expectedTarget.options > (std::numeric_limits<uintptr_t>::max)() - fov::kOptionsSearchBytes)
+        if (!g_supportedBuild || options == 0 || (options & 7) != 0 ||
+            options > (std::numeric_limits<uintptr_t>::max)() - fov::kOptionsSearchBytes)
             return false;
 
-        // Resolve the named mouse sensitivity slider from the same verified
-        // Options object. A numeric value at an unverified offset is not enough.
-        fov::Target currentTarget;
-        float fovValues[5]{};
-        if (!ReadVerifiedTarget(expectedTarget.options, currentTarget, fovValues) ||
-            !fov::SameTarget(currentTarget, expectedTarget))
+        uintptr_t optionsVtable = 0;
+        if (!ReadPrivateMemory(options, &optionsVtable, sizeof(optionsVtable)) ||
+            optionsVtable != g_gameModuleBase + fov::kOptionsVtableRva)
             return false;
 
+        // Resolve the named mouse sensitivity slider from the verified Options
+        // object independently of the current FOV target.
         unsigned int matches = 0;
+        uintptr_t foundOwner = 0;
+        uintptr_t foundAddress = 0;
         float foundValue = 0.0f;
         for (size_t offset = 0; offset + sizeof(uintptr_t) <= fov::kOptionsSearchBytes;
             offset += sizeof(uintptr_t))
         {
             uintptr_t wrapper = 0;
-            if (!ReadPrivateMemory(expectedTarget.options + offset, &wrapper, sizeof(wrapper))) return false;
+            if (!ReadPrivateMemory(options + offset, &wrapper, sizeof(wrapper))) return false;
             if (wrapper == 0 || (wrapper & 7) != 0 ||
                 wrapper > (std::numeric_limits<uintptr_t>::max)() - fov::kPatternOffset) continue;
 
@@ -547,10 +533,14 @@ namespace
                 continue;
 
             ++matches;
+            foundOwner = header[1];
+            foundAddress = wrapper + fov::kPatternOffset + 2 * sizeof(float);
             foundValue = values[2];
         }
 
         if (matches != 1) return false;
+        owner = foundOwner;
+        valueAddress = foundAddress;
         value = foundValue;
         return true;
     }
@@ -624,7 +614,7 @@ namespace
 
     // Atomic value comparison prevents overwriting a setting changed between
     // verification and the write. SEH handles an allocation disappearing then.
-    bool CompareExchangeFov(uintptr_t address, float expected, float replacement)
+    bool CompareExchangeFloat(uintptr_t address, float expected, float replacement)
     {
         LONG expectedBits = 0, replacementBits = 0;
         std::memcpy(&expectedBits, &expected, sizeof(expected));
@@ -647,14 +637,50 @@ namespace
         Failed
     };
 
+    bool SameFloatBits(float left, float right)
+    {
+        uint32_t leftBits = 0, rightBits = 0;
+        std::memcpy(&leftBits, &left, sizeof(leftBits));
+        std::memcpy(&rightBits, &right, sizeof(rightBits));
+        return leftBits == rightBits;
+    }
+
+    SensitivityRestoreResult RestoreZoomSensitivityValue(uintptr_t address, float originalValue, float zoomValue)
+    {
+        float currentValue = 0.0f;
+        if (!ReadPrivateMemory(address, &currentValue, sizeof(currentValue)))
+            return SensitivityRestoreResult::Failed;
+        if (!std::isfinite(currentValue)) return SensitivityRestoreResult::ValueChanged;
+        if (SameFloatBits(currentValue, originalValue))
+            return SensitivityRestoreResult::Restored;
+        if (SameFloatBits(currentValue, zoomValue))
+            return CompareExchangeFloat(address, zoomValue, originalValue) ?
+                SensitivityRestoreResult::Restored : SensitivityRestoreResult::Failed;
+        return SensitivityRestoreResult::ValueChanged;
+    }
+
     SensitivityRestoreResult RestoreZoomSensitivity()
     {
         if (!g_zoomSensitivity.active) return SensitivityRestoreResult::NotActive;
-        InterlockedExchange(&g_zoomMouseScalingActive, 0);
-        InterlockedExchange(&g_zoomMouseScaleBasisPoints, 10'000);
-        g_zoomSensitivity.active = false;
-        LogZoomStatus("mouse-sensitivity-scaling-restored");
-        return SensitivityRestoreResult::Restored;
+        uintptr_t currentOwner = 0;
+        uintptr_t currentAddress = 0;
+        float currentValue = 0.0f;
+        if (!ReadVerifiedMouseSensitivity(g_zoomSensitivity.target.options, currentOwner, currentAddress,
+            currentValue))
+            return SensitivityRestoreResult::Failed;
+        if (currentOwner != g_zoomSensitivity.owner || currentAddress != g_zoomSensitivity.valueAddress)
+        {
+            g_zoomSensitivity.active = false;
+            LogZoomStatus("mouse-sensitivity-target-changed");
+            return SensitivityRestoreResult::ValueChanged;
+        }
+        const SensitivityRestoreResult result = RestoreZoomSensitivityValue(g_zoomSensitivity.valueAddress,
+            g_zoomSensitivity.originalValue, g_zoomSensitivity.zoomValue);
+        if (result != SensitivityRestoreResult::Failed) g_zoomSensitivity.active = false;
+        LogZoomStatus(result == SensitivityRestoreResult::Restored ? "mouse-sensitivity-restored" :
+            result == SensitivityRestoreResult::ValueChanged ? "mouse-sensitivity-changed-externally" :
+            "mouse-sensitivity-restore-pending");
+        return result;
     }
 
     FovRestoreResult CompleteZoomRestore(FovRestoreResult fovResult)
@@ -676,6 +702,15 @@ namespace
 
         LogZoomStatus("restored");
         return FovRestoreResult::Restored;
+    }
+
+    FovRestoreResult FailZoomRestore()
+    {
+        // FOV and mouse sensitivity are separate targets. A failed FOV read or
+        // write must not leave the temporary sensitivity in place.
+        RestoreZoomSensitivity();
+        g_zoomRestorePending = true;
+        return FovRestoreResult::Failed;
     }
 
     bool ParseUnsignedValue(const std::wstring& text, uintptr_t& value)
@@ -1173,8 +1208,7 @@ namespace
         float values[5]{};
         if (!ReadFovPattern(g_zoom.target.pattern, values))
         {
-            g_zoomRestorePending = true;
-            return FovRestoreResult::Failed;
+            return FailZoomRestore();
         }
 
         fov::Target current;
@@ -1189,10 +1223,9 @@ namespace
         const bool valueIsOriginal = std::fabs(values[2] - g_zoom.originalValue) < kFovMatchTolerance;
         if (valueIsZoomed)
         {
-            if (!CompareExchangeFov(valueAddress, g_zoom.displayedValue, g_zoom.originalValue))
+            if (!CompareExchangeFloat(valueAddress, g_zoom.displayedValue, g_zoom.originalValue))
             {
-                g_zoomRestorePending = true;
-                return FovRestoreResult::Failed;
+                return FailZoomRestore();
             }
         }
         else if (!valueIsOriginal)
@@ -1200,19 +1233,17 @@ namespace
             // Preserve a value changed by the game or the user while Zoom was active,
             // but still put back the temporary slider floor we own.
             if (std::fabs(values[0] - kZoomMinimumFov) < kFovMatchTolerance &&
-                !CompareExchangeFov(minimumAddress, kZoomMinimumFov, g_zoom.originalMinimumValue))
+                !CompareExchangeFloat(minimumAddress, kZoomMinimumFov, g_zoom.originalMinimumValue))
             {
-                g_zoomRestorePending = true;
-                return FovRestoreResult::Failed;
+                return FailZoomRestore();
             }
             return CompleteZoomRestore(FovRestoreResult::ValueChanged);
         }
 
         if (std::fabs(values[0] - kZoomMinimumFov) < kFovMatchTolerance &&
-            !CompareExchangeFov(minimumAddress, kZoomMinimumFov, g_zoom.originalMinimumValue))
+            !CompareExchangeFloat(minimumAddress, kZoomMinimumFov, g_zoom.originalMinimumValue))
         {
-            g_zoomRestorePending = true;
-            return FovRestoreResult::Failed;
+            return FailZoomRestore();
         }
 
         float verify[5]{};
@@ -1223,8 +1254,7 @@ namespace
             return CompleteZoomRestore(FovRestoreResult::Restored);
         }
 
-        g_zoomRestorePending = true;
-        return FovRestoreResult::Failed;
+        return FailZoomRestore();
     }
 
     bool StartFovScan();
@@ -1283,8 +1313,11 @@ namespace
             return;
         }
 
+        uintptr_t sensitivityOwner = 0;
+        uintptr_t sensitivityValueAddress = 0;
         float sensitivityValue = 0.0f;
-        bool sensitivityApplied = ReadVerifiedMouseSensitivity(target, sensitivityValue);
+        bool sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, sensitivityOwner,
+            sensitivityValueAddress, sensitivityValue);
         g_zoomSensitivity = {};
         if (!sensitivityApplied)
         {
@@ -1306,28 +1339,37 @@ namespace
 
         if (sensitivityApplied)
         {
-            g_zoomSensitivity.target = target;
-            g_zoomSensitivity.originalValue = sensitivityValue;
-            g_zoomSensitivity.active = true;
-            if (sensitivityValue > kFovMatchTolerance)
+            const float zoomSensitivity = g_zoomConfig.mouseSensitivity * kMouseSensitivityPercentScale;
+            uintptr_t currentSensitivityOwner = 0;
+            uintptr_t currentSensitivityAddress = 0;
+            float currentSensitivityValue = 0.0f;
+            sensitivityApplied = ReadVerifiedMouseSensitivity(target.options, currentSensitivityOwner,
+                currentSensitivityAddress, currentSensitivityValue) && currentSensitivityOwner == sensitivityOwner &&
+                currentSensitivityAddress == sensitivityValueAddress &&
+                std::fabs(currentSensitivityValue - sensitivityValue) < kFovMatchTolerance;
+            if (std::fabs(sensitivityValue - zoomSensitivity) >= kFovMatchTolerance &&
+                sensitivityApplied && CompareExchangeFloat(sensitivityValueAddress, sensitivityValue, zoomSensitivity))
             {
-                const double scale = static_cast<double>(g_zoomConfig.mouseSensitivity) /
-                    (static_cast<double>(sensitivityValue) / kMouseSensitivityPercentScale);
-                const LONG scaleBasisPoints = static_cast<LONG>(std::clamp(std::llround(scale * 10'000.0),
-                    0LL, 100'000LL));
-                InterlockedExchange(&g_zoomMouseScaleBasisPoints, scaleBasisPoints);
-                InterlockedExchange(&g_zoomMouseScalingActive, 1);
-                LogZoomStatus("mouse-sensitivity-scaling-applied");
+                g_zoomSensitivity.target = target;
+                g_zoomSensitivity.owner = sensitivityOwner;
+                g_zoomSensitivity.valueAddress = sensitivityValueAddress;
+                g_zoomSensitivity.originalValue = sensitivityValue;
+                g_zoomSensitivity.zoomValue = zoomSensitivity;
+                g_zoomSensitivity.active = true;
+                LogZoomStatus("mouse-sensitivity-option-adjusted");
+            }
+            else if (sensitivityApplied && std::fabs(sensitivityValue - zoomSensitivity) < kFovMatchTolerance)
+            {
+                LogZoomStatus("mouse-sensitivity-already-at-zoom-value");
             }
             else
             {
                 sensitivityApplied = false;
-                g_zoomSensitivity.active = false;
-                LogZoomStatus("mouse-sensitivity-zero-zoom-without-change");
+                LogZoomStatus("mouse-sensitivity-write-refused");
             }
         }
 
-        if (!CompareExchangeFov(target.pattern, values[0], kZoomMinimumFov))
+        if (!CompareExchangeFloat(target.pattern, values[0], kZoomMinimumFov))
         {
             g_zoom.transitionActive = false;
             const FovRestoreResult restore = RestoreZoom();
@@ -1751,82 +1793,11 @@ namespace
         return true;
     }
 
-    uintptr_t GetGameInputDeviceIdentity(void* reading)
-    {
-        if (reading == nullptr) return 0;
-        using GetDeviceFunction = void(STDMETHODCALLTYPE*)(void*, IUnknown**);
-        auto** vtable = *reinterpret_cast<void***>(reading);
-        if (vtable == nullptr || vtable[5] == nullptr) return 0;
-        IUnknown* device = nullptr;
-        reinterpret_cast<GetDeviceFunction>(vtable[5])(reading, &device);
-        const uintptr_t identity = reinterpret_cast<uintptr_t>(device);
-        if (device != nullptr) device->Release();
-        return identity;
-    }
-
-    void ScaleGameInputMouseMovement(void* reading, int64_t& positionX, int64_t& positionY)
-    {
-        const uintptr_t device = GetGameInputDeviceIdentity(reading);
-        if (device == 0) return;
-        const LONG scaleBasisPoints = InterlockedCompareExchange(&g_zoomMouseScalingActive, 0, 0) != 0 &&
-            ModuleShortcutsAllowed(g_trackedGameWindow) && !ShortcutNeedsRelease(g_zoomConfig.zoomKey) ?
-            InterlockedCompareExchange(&g_zoomMouseScaleBasisPoints, 0, 0) : 10'000;
-        AcquireSRWLockExclusive(&g_mousePositionScaleLock);
-        unsigned int index = 0;
-        while (index < std::size(g_gameInputMousePositionScale) &&
-            g_gameInputMousePositionScale[index].device != device) ++index;
-        if (index == std::size(g_gameInputMousePositionScale))
-        {
-            index = 0;
-            while (index < std::size(g_gameInputMousePositionScale) &&
-                g_gameInputMousePositionScale[index].device != 0) ++index;
-        }
-        if (index == std::size(g_gameInputMousePositionScale))
-        {
-            ReleaseSRWLockExclusive(&g_mousePositionScaleLock);
-            return;
-        }
-        PerDeviceMousePositionScaleState& state = g_gameInputMousePositionScale[index];
-        if (state.device != device)
-        {
-            state = {};
-            state.device = device;
-        }
-        auto scale = [scaleBasisPoints](MousePositionScaleState& axis, int64_t position)
-        {
-            if (!axis.initialized)
-            {
-                axis.initialized = true;
-                axis.lastInput = position;
-                axis.filteredPosition = static_cast<long double>(position);
-            }
-            else
-            {
-                const long double delta = static_cast<long double>(position) - axis.lastInput;
-                axis.lastInput = position;
-                axis.filteredPosition += delta * scaleBasisPoints / 10'000.0L;
-            }
-            const long double filtered = axis.filteredPosition;
-            if (filtered >= static_cast<long double>((std::numeric_limits<int64_t>::max)()))
-                return (std::numeric_limits<int64_t>::max)();
-            if (filtered <= static_cast<long double>((std::numeric_limits<int64_t>::min)()))
-                return (std::numeric_limits<int64_t>::min)();
-            return static_cast<int64_t>(std::round(filtered));
-        };
-        positionX = scale(state.x, positionX);
-        positionY = scale(state.y, positionY);
-        ReleaseSRWLockExclusive(&g_mousePositionScaleLock);
-    }
-
     bool STDMETHODCALLTYPE FilteredGameInputGetMouseState(IGameInputReading* reading, GameInputMouseState* state)
     {
         if (g_originalGameInputGetMouseState == nullptr) return false;
         const bool result = g_originalGameInputGetMouseState(reading, state);
-        if (result && state != nullptr)
-        {
-            ScaleGameInputMouseMovement(reading, state->positionX, state->positionY);
-            NoteGameInputMouseRead();
-        }
+        if (result && state != nullptr) NoteGameInputMouseRead();
         return result;
     }
 
@@ -1836,10 +1807,6 @@ namespace
         const bool result = g_originalGameInputV2GetMouseState(reading, state);
         if (result && state != nullptr)
         {
-            // GameInput V2 positionX/Y must be relative-position readings;
-            // absolute screen coordinates must remain untouched.
-            if ((state->positions & 0x2u) != 0)
-                ScaleGameInputMouseMovement(reading, state->positionX, state->positionY);
             NoteGameInputMouseRead();
         }
         return result;
@@ -2518,7 +2485,7 @@ namespace
         if (nextValue != g_zoom.displayedValue)
         {
             const uintptr_t valueAddress = g_zoom.target.pattern + sizeof(float) * 2;
-            if (!CompareExchangeFov(valueAddress, g_zoom.displayedValue, nextValue))
+            if (!CompareExchangeFloat(valueAddress, g_zoom.displayedValue, nextValue))
             {
                 g_zoomRestorePending = true;
                 return;
@@ -3356,12 +3323,8 @@ extern "C" __declspec(dllexport) DWORD WINAPI StartGameMod(LPVOID)
 
     InterlockedExchange(&g_stopRequested, 0);
     InterlockedExchange(&g_indicatorVisible, 0);
-    InterlockedExchange(&g_zoomMouseScalingActive, 0);
-    InterlockedExchange(&g_zoomMouseScaleBasisPoints, 10'000);
     InterlockedExchange(&g_nativeMouseCallbacks, 0);
     std::fill(std::begin(g_nativeMouseHookStates), std::end(g_nativeMouseHookStates), NativeMouseHookState{});
-    std::fill(std::begin(g_gameInputMousePositionScale), std::end(g_gameInputMousePositionScale),
-        PerDeviceMousePositionScaleState{});
     g_zoom = {};
     g_zoomSensitivity = {};
     g_zoomConfig = {};

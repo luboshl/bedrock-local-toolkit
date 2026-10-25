@@ -396,21 +396,42 @@ namespace
 
     void TestZoomMouseSensitivityInterpolation()
     {
-        Check(GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 70.0f) == 0.24f,
+        Check(GetZoomMouseSensitivityValue(0.24f, 45.0f, 70.0f, 70.0f) == 0.24f,
             "normal FOV keeps the Minecraft sensitivity option unchanged");
-        Check(std::fabs(GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 35.5f) - 0.18f) < 0.0001f,
-            "intermediate FOV smoothly interpolates the normalized sensitivity option");
-        Check(std::fabs(GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 1.0f) - 0.12f) < 0.0001f,
-            "minimum FOV reaches the configured 12 percent Minecraft sensitivity");
-        Check(std::fabs(GetZoomMouseSensitivityValue(0.20f, 20.0f, 70.0f, 1.0f) - 0.20f) < 0.0001f,
-            "20 percent in the INI maps to the same normalized Minecraft option value");
-        Check(std::fabs(GetZoomMouseSensitivityValue(0.01f, 45.0f, 70.0f, 1.0f) - 0.45f) < 0.0001f,
-            "low native sensitivity reaches the configured target without a ratio cap");
-        Check(GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 0.0f) == 0.12f &&
+
+        constexpr double degreesToRadians = 0.017453292519943295769;
+        const float normalValue = GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, 70.0f);
+        const float intermediateValue = GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, 35.5f);
+        const double normalProjection = std::tan(70.0 * degreesToRadians * 0.5);
+        const double intermediateProjection = std::tan(35.5 * degreesToRadians * 0.5);
+        Check(std::fabs(static_cast<double>(intermediateValue) / intermediateProjection -
+            static_cast<double>(normalValue) / normalProjection) < 0.0001,
+            "intermediate FOV preserves screen-space mouse movement with full zoom sensitivity");
+
+        const float minimumValue = GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, 1.0f);
+        Check(std::fabs(minimumValue - static_cast<float>(0.24 *
+            std::tan(0.5 * degreesToRadians) / normalProjection)) < 0.00001f,
+            "minimum FOV compensates for the camera projection's optical magnification");
+        const float reducedValue = GetZoomMouseSensitivityValue(0.24f, 45.0f, 70.0f, 1.0f);
+        Check(reducedValue < minimumValue && std::fabs(reducedValue - minimumValue * 0.45f) < 0.00001f,
+            "configured zoom sensitivity scales the optical compensation at maximum zoom");
+        bool smooth = true;
+        float previousValue = 0.24f;
+        for (int step = 1; step <= 690; ++step)
+        {
+            const float fov = 70.0f - static_cast<float>(step) * 0.1f;
+            const float value = GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, fov);
+            smooth = smooth && value <= previousValue && previousValue - value < 0.001f;
+            previousValue = value;
+        }
+        Check(smooth, "projection-compensated sensitivity changes monotonically without step-sized jumps");
+        Check(GetZoomMouseSensitivityValue(0.24f, 0.0f, 70.0f, 1.0f) == 0.0f,
+            "zero configured zoom sensitivity stops camera movement at minimum FOV");
+        Check(GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, 0.0f) == minimumValue &&
             GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 120.0f) == 0.24f,
-            "sensitivity interpolation clamps FOV to its valid endpoints");
-        Check(GetZoomMouseSensitivityValue(0.0f, 12.0f, 70.0f, 1.0f) == 0.12f,
-            "a zero Minecraft setting can interpolate safely to the configured value");
+            "sensitivity calculation clamps FOV to its valid endpoints");
+        Check(GetZoomMouseSensitivityValue(0.0f, 45.0f, 70.0f, 1.0f) == 0.0f,
+            "zero native sensitivity remains zero while zoomed");
     }
 
     void TestZoomSensitivityRestoration()
@@ -1242,3 +1263,4 @@ int main()
         return 1;
     }
 }
+

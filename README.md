@@ -18,7 +18,7 @@ Use this software at your own risk. It is provided "as is", without warranties o
 
 | Feature | Key (default) | Details and verification |
 | --- | --- | --- |
-| Zoom | T (hold), mouse wheel | Smooth local FOV transition; defaults to 25° in first person and 29° in third person, with a 75 ms transition. `MouseSensitivity` is the target on Minecraft's 0–100 scale at the minimum FOV of 1°; the live game option is interpolated from its current value according to FOV. The wheel adjusts the target FOV. Zoom changes the uniquely verified game option and restores it only while the same option remains bound to the same value address and still contains the value written by the module. Cumulative GameInput mouse coordinates remain unchanged. Default T Zoom activation, sensitivity-target validation, and restoration were checked in a local test world; response across FOV levels, latest wheel behavior, and desktop mouse response still need dedicated checks. |
+| Zoom | T (hold), mouse wheel | Smooth local FOV transition; defaults to 25� in first person and 29� in third person, with a 75 ms transition. `MouseSensitivity` is a 0-100 multiplier on optically compensated sensitivity at maximum Zoom; 100 approximately preserves screen-space movement as FOV narrows, and lower values slow it further. The uniquely verified game option is adjusted with compare-and-swap and restored only while ownership remains unchanged. Cumulative GameInput mouse coordinates pass through unchanged. Activation, option validation, and restoration were checked in a local test world; low-FOV camera movement, wheel behavior, and desktop mouse response still need dedicated in-game checks.
 | Always day | F6 | Keeps the rendered sun at noon and the moon below the horizon, with daytime sky colours. World time keeps progressing normally. The previous implementation failed its Fancy graphics test (issue #22). The updated rotation and camera paths pass automated tests and await an in-game visual retest. |
 | Nametag | F7 | Displays your name in both third-person views, including when F1 hides the HUD. Verified in a local game. |
 | Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
@@ -35,7 +35,7 @@ Always day and Full Bright are enabled automatically after their profiles are ve
 
 Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Set `FirstPersonFov` and `ThirdPersonFov` separately under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script installs this default configuration next to the launcher without overwriting an existing one. To reset settings to defaults, remove `bedrock-toolkit.ini` next to the launcher and rebuild; missing settings also use the defaults. The older `Fov` setting remains supported as a fallback for both perspectives.
 
-`MouseSensitivity` under `[Zoom]` sets the temporary in-game mouse sensitivity while Zoom is active, as a percentage from 0 to 100. GameInput cumulative mouse coordinates are passed through unchanged so low sensitivity does not discard small input deltas. If the sensitivity option cannot be uniquely verified, Zoom continues without changing it.
+`MouseSensitivity` under `[Zoom]` is a 0-100 multiplier on the optically compensated sensitivity at maximum Zoom. At 100, sensitivity follows the camera projection ratio `tan(current FOV / 2) / tan(normal FOV / 2)` to keep mouse movement approximately constant on screen; lower values slow movement further as Zoom deepens. GameInput cumulative mouse coordinates remain unchanged so small input deltas are never discarded by scaling or rounding. If the sensitivity option cannot be uniquely verified, Zoom continues without changing it.
 
 Under `[nametag]`, `show_when_hud_hidden=true` keeps your own name visible when F1 hides the HUD; it defaults to `true`. Set it to `false` to hide the name with the HUD. F7 still controls Nametag, and the name stays hidden in first person. Other actors' names and hovered-object labels retain their native HUD suppression. Restart the module to apply configuration changes.
 
@@ -92,7 +92,7 @@ From the repository root, run:
 
 This builds the C++ game module and C# launcher, then runs the isolated automated tests. Tests cover implementation details against synthetic memory; passing tests do not prove that behavior works in a live game. See [`SPECIFICATION.md`](SPECIFICATION.md) for the security requirements and verification boundaries.
 
-The gameplay/Zoom stutter fix uses precise animation timing, removes synchronous input diagnostics and repeated hook scans, and limits indicator redraws. Low-FOV Zoom now adjusts the verified sensitivity option directly while preserving cumulative mouse readings (issue #50). Automated checks cover transition timing, sensitivity restoration, and deferred diagnostics; sprint-jumping and camera movement at FOV 1 still require an in-game retest (issues #30 and #50).
+The gameplay/Zoom stutter fix uses precise animation timing, removes synchronous input diagnostics and repeated hook scans, and limits indicator redraws. Low-FOV Zoom adjusts the verified sensitivity option by the camera projection ratio while preserving cumulative mouse readings (issues #50 and #55). Isolated tests cover the projection-based sensitivity curve, transition timing, sensitivity restoration, and deferred diagnostics; smooth camera movement at FOV 1 still needs an in-game retest (issues #30, #50, and #55).
 
 ## Publish a release
 
@@ -138,11 +138,12 @@ The repository includes MinHook source under [`GameMod/vendor/minhook/`](GameMod
 
 ## Project documentation
 
-- [`AGENTS.md`](AGENTS.md) — repository guidelines for development.
-- [`SPECIFICATION.md`](SPECIFICATION.md) — project scope, security requirements, and verification limits.
-- [`FINDINGS.md`](FINDINGS.md) — technical findings and design rationale.
-- [`diagnostics/`](diagnostics/) — read-only diagnostic tools for the supported game build.
+- [`AGENTS.md`](AGENTS.md) - repository guidelines for development.
+- [`SPECIFICATION.md`](SPECIFICATION.md) - project scope, security requirements, and verification limits.
+- [`FINDINGS.md`](FINDINGS.md) - technical findings and design rationale.
+- [`diagnostics/`](diagnostics/) - read-only diagnostic tools for the supported game build.
 
 ## License
 
 Original code in this repository is licensed under the [MIT License](LICENSE). This license does not cover Minecraft or grant rights to Minecraft's code, assets, or trademarks. Third-party components retain their own licenses; see [`GameMod/vendor/minhook/LICENSE.txt`](GameMod/vendor/minhook/LICENSE.txt).
+

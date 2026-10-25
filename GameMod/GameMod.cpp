@@ -89,14 +89,27 @@ namespace
             normalFov <= kZoomMinimumFov)
             return normalSensitivity;
 
+        constexpr double kDegreesToRadians = 0.017453292519943295769;
+        const double minimumFov = kZoomMinimumFov;
+        const double boundedNormalFov = std::clamp(static_cast<double>(normalFov), minimumFov, 120.0);
+        const double boundedCurrentFov = std::clamp(static_cast<double>(currentFov), minimumFov, boundedNormalFov);
+        const double normalHalfAngle = boundedNormalFov * kDegreesToRadians * 0.5;
+        const double currentHalfAngle = boundedCurrentFov * kDegreesToRadians * 0.5;
+        const double normalProjectionScale = std::tan(normalHalfAngle);
+        if (!std::isfinite(normalProjectionScale) || normalProjectionScale <= 0.0)
+            return normalSensitivity;
+
+        // Preserve approximately the same screen-space movement per mouse delta
+        // as the FOV narrows. Camera projection magnification is proportional to
+        // 1 / tan(FOV / 2), so sensitivity follows the inverse projection scale.
+        const double opticalSensitivityScale = std::tan(currentHalfAngle) / normalProjectionScale;
         const double zoomProgress = std::clamp(
-            (static_cast<double>(normalFov) - currentFov) /
-                (static_cast<double>(normalFov) - kZoomMinimumFov),
-            0.0, 1.0);
-        const double targetSensitivity = std::clamp(static_cast<double>(targetSensitivityPercent), 0.0, 100.0) *
-            kMouseSensitivityPercentScale;
-        return static_cast<float>(static_cast<double>(normalSensitivity) +
-            (targetSensitivity - normalSensitivity) * zoomProgress);
+            (boundedNormalFov - boundedCurrentFov) / (boundedNormalFov - minimumFov), 0.0, 1.0);
+        const double configuredMultiplier = std::clamp(
+            static_cast<double>(targetSensitivityPercent), 0.0, 100.0) * kMouseSensitivityPercentScale;
+        const double zoomMultiplier = 1.0 + (configuredMultiplier - 1.0) * zoomProgress;
+        return static_cast<float>(static_cast<double>(normalSensitivity) *
+            opticalSensitivityScale * zoomMultiplier);
     }
 
     struct ZoomConfig
@@ -3727,3 +3740,4 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
 
     return TRUE;
 }
+

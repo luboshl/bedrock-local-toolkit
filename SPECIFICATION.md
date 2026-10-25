@@ -50,4 +50,3 @@ Read-only diagnostic tools for this build are in [diagnostics/](diagnostics/READ
 Compatibility claims apply only to the listed build. Multiplayer, other versions, dimensions, and graphics modes are not designated as supported. After changing the input path or rendering profile, distinguish successful builds, automated tests, and practical in-game verification again.
 
 The gameplay/Zoom stutter changes (issue #30) and projection-based sensitivity handling (issue #55) pass isolated transition-timing, camera-projection scaling, sensitivity compare-and-swap/restoration, asynchronous diagnostic snapshots, blocked-writer shutdown, pending-restoration diagnostics, message-hook ownership, and input-aware wait tests. Sprint-jumping, camera movement at FOV 1, Zoom transitions in both directions, wheel adjustments, and screen/focus changes still require an in-game retest; automated checks do not establish smooth live frame pacing.
-

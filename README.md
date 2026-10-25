@@ -146,4 +146,3 @@ The repository includes MinHook source under [`GameMod/vendor/minhook/`](GameMod
 ## License
 
 Original code in this repository is licensed under the [MIT License](LICENSE). This license does not cover Minecraft or grant rights to Minecraft's code, assets, or trademarks. Third-party components retain their own licenses; see [`GameMod/vendor/minhook/LICENSE.txt`](GameMod/vendor/minhook/LICENSE.txt).
-

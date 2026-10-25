@@ -65,4 +65,3 @@ Previous fixes for hotbar scrolling and false camera movement were verified in a
 ## Dependencies
 
 MinHook source is included in the repository under `GameMod\vendor\minhook`, including its license, and is built locally. Add another external dependency only after verifying its origin, version, license, sources, and transitive dependencies; do not use its precompiled DLLs or non-public code.
-

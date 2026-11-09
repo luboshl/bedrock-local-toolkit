@@ -1281,34 +1281,73 @@ namespace
             bytesRead == sizeof(value);
     }
 
+    enum class BuildStartupMode
+    {
+        Rejected,
+        Supported,
+        Diagnostic
+    };
+
+    struct BuildIdentity
+    {
+        std::wstring packageFullName;
+        bool gameModulePresent = false;
+        bool peHeadersValid = false;
+        WORD machine = IMAGE_FILE_MACHINE_UNKNOWN;
+        WORD optionalMagic = 0;
+        DWORD timestamp = 0;
+        DWORD imageSize = 0;
+    };
+
+    BuildStartupMode EvaluateBuildStartup(const BuildIdentity& identity, bool allowUnsupportedGameVersion)
+    {
+        constexpr wchar_t packagePrefix[] = L"Microsoft.MinecraftUWP_";
+        constexpr wchar_t packageFamilySuffix[] = L"_x64__8wekyb3d8bbwe";
+        const size_t prefixLength = std::size(packagePrefix) - 1;
+        const size_t suffixLength = std::size(packageFamilySuffix) - 1;
+        const bool expectedPackageFamily =
+            identity.packageFullName.rfind(packagePrefix, 0) == 0 &&
+            identity.packageFullName.size() > prefixLength + suffixLength &&
+            identity.packageFullName.compare(identity.packageFullName.size() - suffixLength,
+                suffixLength, packageFamilySuffix) == 0;
+        if (!expectedPackageFamily || !identity.gameModulePresent || !identity.peHeadersValid ||
+            identity.machine != IMAGE_FILE_MACHINE_AMD64 ||
+            identity.optionalMagic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+            return BuildStartupMode::Rejected;
+
+        const bool expectedPackageVersion = identity.packageFullName == fov::kPackage;
+        const bool expectedPeIdentity = identity.timestamp == fov::kImageTimestamp &&
+            identity.imageSize == fov::kImageSize;
+        if (!allowUnsupportedGameVersion && (!expectedPackageVersion || !expectedPeIdentity))
+            return BuildStartupMode::Rejected;
+        return expectedPeIdentity ? BuildStartupMode::Supported : BuildStartupMode::Diagnostic;
+    }
+
+    bool AllowsBuildFeatureInitialization(BuildStartupMode mode)
+    {
+        return mode == BuildStartupMode::Supported;
+    }
+
     bool InitializeFovBuild()
     {
         std::wstring package;
         if (!ReadCurrentPackageFullName(package)) return false;
-        constexpr wchar_t expectedPackageFamilySuffix[] = L"_x64__8wekyb3d8bbwe";
-        const size_t familySuffixLength = std::size(expectedPackageFamilySuffix) - 1;
-        const bool expectedPackageFamily = package.rfind(L"Microsoft.MinecraftUWP_", 0) == 0 &&
-            package.size() >= familySuffixLength &&
-            package.compare(package.size() - familySuffixLength, familySuffixLength,
-                expectedPackageFamilySuffix) == 0;
-        if (!expectedPackageFamily) return false;
-        const bool expectedPackageVersion = package == fov::kPackage;
-        if (!expectedPackageVersion && !g_zoomConfig.allowUnsupportedGameVersion) return false;
         const HMODULE module = GetModuleHandleW(kExpectedGameModuleName);
         if (module == nullptr) return false;
         const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
         if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 4096) return false;
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(reinterpret_cast<uintptr_t>(module) + dos->e_lfanew);
-        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-            nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return false;
+        const BuildIdentity identity{package, true, nt->Signature == IMAGE_NT_SIGNATURE,
+            nt->FileHeader.Machine, nt->OptionalHeader.Magic,
+            nt->FileHeader.TimeDateStamp, nt->OptionalHeader.SizeOfImage};
+        const BuildStartupMode startupMode =
+            EvaluateBuildStartup(identity, g_zoomConfig.allowUnsupportedGameVersion);
+        if (startupMode == BuildStartupMode::Rejected) return false;
         g_gameModuleBase = reinterpret_cast<uintptr_t>(module);
-        const bool expectedPeIdentity = nt->FileHeader.TimeDateStamp == fov::kImageTimestamp &&
-            nt->OptionalHeader.SizeOfImage == fov::kImageSize;
-        if (!expectedPeIdentity)
+        g_supportedBuild = AllowsBuildFeatureInitialization(startupMode);
+        if (startupMode == BuildStartupMode::Diagnostic)
         {
-            if (!g_zoomConfig.allowUnsupportedGameVersion) return false;
             // The opt-in permits module startup only. Feature initializers still reject unverified profiles.
-            g_supportedBuild = false;
             g_versionMismatchBypassed = true;
             InterlockedExchange(&g_zoomReadiness, 3);
             return true;

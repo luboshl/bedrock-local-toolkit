@@ -1344,7 +1344,7 @@ namespace
             EvaluateBuildStartup(identity, g_zoomConfig.allowUnsupportedGameVersion);
         if (startupMode == BuildStartupMode::Rejected) return false;
         g_gameModuleBase = reinterpret_cast<uintptr_t>(module);
-        g_supportedBuild = AllowsBuildFeatureInitialization(startupMode);
+        g_supportedBuild = false;
         if (startupMode == BuildStartupMode::Diagnostic)
         {
             // The opt-in permits module startup only. Feature initializers still reject unverified profiles.

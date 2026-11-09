@@ -427,6 +427,11 @@ namespace
         return IsGameActive(gameWindow) && screens::AllowsShortcuts();
     }
 
+    bool MayDetachUnsupportedBuild(bool diagnosticMode, bool gameForeground, bool keyDown, bool keyWasDown)
+    {
+        return diagnosticMode && gameForeground && keyDown && !keyWasDown;
+    }
+
     bool ShortcutNeedsRelease(int key)
     {
         return key > 0 && key < 256 && InterlockedCompareExchange(&g_shortcutNeedsRelease[key], 0, 0) != 0;
@@ -1119,8 +1124,7 @@ namespace
         {
             value = TrimWhitespace(value);
             if (_wcsicmp(value.c_str(), L"true") == 0) loaded.allowUnsupportedGameVersion = true;
-            else if (_wcsicmp(value.c_str(), L"false") == 0) loaded.allowUnsupportedGameVersion = false;
-            else return false;
+            else loaded.allowUnsupportedGameVersion = false;
         }
         if (!readKey(L"Zoom", loaded.zoomKey) || !readKey(L"Nametag", loaded.nametagKey) ||
             !readKey(L"AlwaysDay", loaded.alwaysDayKey) || !readKey(L"FullBright", loaded.fullBrightKey) ||
@@ -3229,7 +3233,7 @@ namespace
         bool f7WasDown = (GetAsyncKeyState(g_zoomConfig.nametagKey) & 0x8000) != 0;
         bool indicatorWasDown = false;
         bool escapeWasDown = false;
-        bool detachWasDown = false;
+        bool detachWasDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
         bool zoomNeedsRelease = false;
         HANDLE workerTimer = CreateWaitableTimerExW(nullptr, nullptr,
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
@@ -3246,15 +3250,18 @@ namespace
         MSG message{};
 
         g_trackedGameWindow = GetGameWindow();
-        g_zoomKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL,
-            ZoomKeyboardHookProc, g_module, 0);
-        if (g_zoomKeyboardHook == nullptr)
+        if (g_supportedBuild)
         {
-            LogZoomStatus("zoom-keyboard-hook-failed");
-        }
-        else
-        {
-            LogZoomStatus("zoom-keyboard-hooked");
+            g_zoomKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL,
+                ZoomKeyboardHookProc, g_module, 0);
+            if (g_zoomKeyboardHook == nullptr)
+            {
+                LogZoomStatus("zoom-keyboard-hook-failed");
+            }
+            else
+            {
+                LogZoomStatus("zoom-keyboard-hooked");
+            }
         }
 
         while (InterlockedCompareExchange(&g_stopRequested, 0, 0) == 0)
@@ -3279,7 +3286,7 @@ namespace
             const HWND gameWindow = GetGameWindow();
             g_trackedGameWindow = gameWindow;
             const ULONGLONG loopTime = GetTickCount64();
-            if (!g_zoom.transitionActive && loopTime - lastRawApiHookScanAt >= 2'000)
+            if (g_supportedBuild && !g_zoom.transitionActive && loopTime - lastRawApiHookScanAt >= 2'000)
             {
                 const unsigned int patched = InstallRawInputApiHooks();
                 if (patched > 0)
@@ -3297,7 +3304,7 @@ namespace
                 }
                 lastRawApiHookScanAt = loopTime;
             }
-            if (!g_zoom.transitionActive && loopTime - lastGameInputHookScanAt >= 2'000)
+            if (g_supportedBuild && !g_zoom.transitionActive && loopTime - lastGameInputHookScanAt >= 2'000)
             {
                 if (InstallGameInputApiHooks())
                 {
@@ -3311,6 +3318,16 @@ namespace
                 lastGameInputHookScanAt = loopTime;
             }
             const bool foreground = IsGameActive(gameWindow);
+            if (g_versionMismatchBypassed)
+            {
+                const bool detachDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
+                if (MayDetachUnsupportedBuild(true, foreground, detachDown, detachWasDown))
+                {
+                    LogZoomStatus("unsupported-build-diagnostic-detach-requested");
+                    InterlockedExchange(&g_stopRequested, 1);
+                }
+                detachWasDown = detachDown;
+            }
             const bool active = foreground && screens::AllowsShortcuts();
             if (active != shortcutsWereAllowed)
             {

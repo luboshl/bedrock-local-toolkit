@@ -8,6 +8,9 @@ This is a local add-on for Minecraft Bedrock on Windows: a C# launcher and a cus
 
 ## Technical Changes
 
+- Before starting or resuming work on a GitHub issue, check the working tree. If there are unrelated local changes, describe them to the user and ask how to proceed. Wait for the user's decision before switching branches or editing files. Never overwrite or discard local changes.
+- When implementing a GitHub issue for the first time, run `git fetch origin` after checking the working tree and resolving how to handle any unrelated local changes. If the fetch fails, report the failure and pause before creating the branch or starting implementation. After a successful fetch, create and switch to a dedicated branch from the updated `origin/main` using `git switch --create <issue-branch> origin/main`.
+- When resuming work on an issue or addressing pull request feedback, use the existing branch for that issue.
 - Keep all human-readable text in the repository in English, regardless of the language used to communicate with the user. This includes documentation, code comments, notes, tests, and user-facing strings such as logs and errors. Preserve identifiers and other literals whose exact wording is required by an API, file format, or game.
 - Write all GitHub issues and pull requests in English, regardless of the language used to communicate with the user.
 - Before editing, inspect the affected code and relevant sections of the specification and technical findings. Preserve the principles in [FINDINGS.md](FINDINGS.md), especially the distinction between cumulative GameInput state and actual input deltas.

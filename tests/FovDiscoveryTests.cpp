@@ -39,6 +39,57 @@ namespace
 
     void TestToolkitConfig()
     {
+        BuildIdentity supportedIdentity{fov::kPackage, true, true, IMAGE_FILE_MACHINE_AMD64,
+            IMAGE_NT_OPTIONAL_HDR64_MAGIC, fov::kImageTimestamp, fov::kImageSize};
+        Check(EvaluateBuildStartup(supportedIdentity, false) == BuildStartupMode::Supported,
+            "supported package and PE identity pass strict startup");
+
+        BuildIdentity otherPackageVersion = supportedIdentity;
+        otherPackageVersion.packageFullName =
+            L"Microsoft.MinecraftUWP_1.26.5204.0_x64__8wekyb3d8bbwe";
+        Check(EvaluateBuildStartup(otherPackageVersion, false) == BuildStartupMode::Rejected &&
+            EvaluateBuildStartup(otherPackageVersion, true) == BuildStartupMode::Supported,
+            "package version mismatch is strict by default and opt-in only when PE identity matches");
+
+        BuildIdentity otherPeIdentity = supportedIdentity;
+        ++otherPeIdentity.timestamp;
+        Check(EvaluateBuildStartup(otherPeIdentity, false) == BuildStartupMode::Rejected,
+            "PE identity mismatch is rejected in strict mode");
+        const BuildStartupMode diagnosticMode = EvaluateBuildStartup(otherPeIdentity, true);
+        Check(diagnosticMode == BuildStartupMode::Diagnostic &&
+            !AllowsBuildFeatureInitialization(diagnosticMode),
+            "opt-in PE mismatch starts diagnostic mode without enabling features");
+        const bool previousSupportedBuild = g_supportedBuild;
+        g_supportedBuild = AllowsBuildFeatureInitialization(diagnosticMode);
+        fov::Target diagnosticTarget{};
+        float diagnosticValues[5]{};
+        Check(!ReadVerifiedTarget(0, diagnosticTarget, diagnosticValues) && !g_supportedBuild &&
+            !InstallMinecraftGameUpdateHook() &&
+            !nametag::ValidateProfile(g_gameModuleBase, g_supportedBuild),
+            "PE-mismatch diagnostic mode disables feature and hook initialization");
+        g_supportedBuild = previousSupportedBuild;
+
+        BuildIdentity wrongFamily = otherPeIdentity;
+        wrongFamily.packageFullName = L"Microsoft.MinecraftUWP_1.26.5204.0_x64__wrongfamily";
+        Check(EvaluateBuildStartup(wrongFamily, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses package-family identity");
+        BuildIdentity wrongArchitecture = otherPeIdentity;
+        wrongArchitecture.machine = IMAGE_FILE_MACHINE_I386;
+        Check(EvaluateBuildStartup(wrongArchitecture, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses PE architecture");
+        BuildIdentity wrongOptionalHeader = otherPeIdentity;
+        wrongOptionalHeader.optionalMagic = IMAGE_NT_OPTIONAL_HDR32_MAGIC;
+        Check(EvaluateBuildStartup(wrongOptionalHeader, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses PE optional-header architecture");
+        BuildIdentity invalidHeaders = otherPeIdentity;
+        invalidHeaders.peHeadersValid = false;
+        Check(EvaluateBuildStartup(invalidHeaders, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses invalid PE headers");
+        BuildIdentity missingModule = otherPeIdentity;
+        missingModule.gameModulePresent = false;
+        Check(EvaluateBuildStartup(missingModule, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses game module identity");
+
         Check(MayDetachUnsupportedBuild(true, true, true, false),
             "diagnostic mode can request safe detach from the foreground game window");
         Check(!MayDetachUnsupportedBuild(true, false, true, false) &&

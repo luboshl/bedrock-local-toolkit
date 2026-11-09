@@ -49,15 +49,24 @@ font_size=28
 
 Set `enabled=false` to hide it or adjust `font_size` from 12 to 48. Both settings reload within about half a second without restarting the client or module; missing or invalid font sizes use 28, while invalid enabled values disable the counter. The counter is independent of F9 and appears only during foreground gameplay, including F1-hidden HUD. It counts calls to the supported build's game update function once per second. It uses installed Minecraftia or privately loads Minecraft's own `data\fonts\Mojangles.ttf`; no fonts are bundled or downloaded. If neither font is available, the counter remains hidden.
 
+Version checking is strict by default. To let the launcher attempt to start with a different Minecraft package version, add:
+
+```ini
+[Compatibility]
+AllowUnsupportedGameVersion=true
+```
+
+This experimental option bypasses only the launcher’s exact package-version check and the module’s exact PE build identity gate. The package family, game process identity, and x64 architecture checks remain mandatory. It does not make another build compatible: each feature still requires its existing profile and target validation, so features whose checks do not match remain disabled. A failed or ambiguous check must not result in a memory write or hook installation. Set the value to `false` or remove it to restore strict version checking; missing, invalid, and false values all keep the strict default.
+
 Module shortcuts work only on verified gameplay screens. In chat, menus, and other text entry screens, keys and the mouse wheel remain available to Minecraft. Opening one of these screens restores the original FOV and ends active Zoom; release any held shortcut before using it again after returning to gameplay. This screen filtering passes isolated tests but still needs in-game verification.
 
 ## Compatibility
 
 - **Operating system:** Windows, x64.
-- **Supported game build:** `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe` only.
+- **Verified game build:** `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe`. Other versions are unsupported; the opt-in below permits an experimental launch attempt only.
 - **Game mode:** Local single-player worlds only. Multiplayer is unsupported, and the add-on cannot reliably detect the current game mode.
 
-The launcher checks the game build and rejects unsupported versions. Do not assume another game version is compatible.
+The launcher checks the exact game build and rejects unsupported versions by default. Do not assume another game version is compatible.
 
 ## Install and run
 
@@ -74,7 +83,7 @@ Alternatively, build the project locally:
 3. Start Minecraft Bedrock.
 4. Run `artifacts\launcher\Launcher.exe`.
 
-The launcher rejects game builds other than the one listed above. Do not use the add-on in multiplayer or on a world you are not willing to use with unsupported software.
+The launcher rejects game builds other than the one listed above by default. The optional `[Compatibility] AllowUnsupportedGameVersion=true` setting permits an experimental attempt, but does not provide compatibility or bypass feature profile checks. Do not use the add-on in multiplayer or on a world you are not willing to use with unsupported software.
 
 ## Build from source
 
@@ -113,13 +122,13 @@ GitHub Actions builds the project and runs the automated tests for pull requests
 
 - Use this project only in a local single-player world. Multiplayer is unsupported.
 - Features affect local controls or rendering. The add-on does not intentionally modify the server protocol, world time, saved world, player attributes, or persistent game objects.
-- The project targets one exact game build. A game update may make it incompatible; do not bypass the launcher's version check.
+- The project has verified profiles for one exact game build. A game update may make it incompatible. The optional `AllowUnsupportedGameVersion` setting only permits an experimental launch attempt; unmatched feature profiles continue to disable their feature.
 - Some features or rendering combinations still need in-game verification. The feature table distinguishes verified behavior from outstanding checks.
 - Safe detach may defer restoration and detachment if another party has changed the relevant code or a callback is still running. Do not force-unload the module in that state.
 
 ## Troubleshooting
 
-- **The launcher rejects the game:** Check that the installed package is exactly `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe`. Other builds are not supported.
+- **The launcher rejects the game:** Check that the installed package is exactly `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe`. Other builds are unsupported unless the experimental `[Compatibility] AllowUnsupportedGameVersion=true` setting is enabled.
 - **A shortcut does not work:** Return to gameplay, release the key, and check [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini) for distinct shortcuts under `[Shortcuts]`. Shortcuts also remain disabled while screen discovery is incomplete or cannot safely identify the active screen; see `screen_profile` and `screen_client` in `zoom-status-<PID>.log`.
 - **A feature behaves differently than expected:** Check its verification status in [Features](#features); some behavior has not yet been tested in-game.
 - **The build fails:** Confirm that the x64 MSVC tools, Windows SDK, and .NET 10 SDK are installed, then review the build output.

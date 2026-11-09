@@ -4,7 +4,9 @@
 
 Local add-on for official Minecraft Bedrock on Windows. The C# launcher verifies the game and prepares to load the custom C++ module. The module modifies only local controls and rendering; it is not a replacement client. This repository maintains an auditable implementation of Zoom and local rendering add-ons that can be built from the included source without third-party binary clients or modifications to the server or saved world.
 
-The only supported package is `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe`. Other versions are unsupported, and the launcher must reject them before installing hooks.
+The only verified package is `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe`. By default, the launcher rejects any other package version before loading the module. The opt-in `[Compatibility] AllowUnsupportedGameVersion=true` setting permits an experimental attempt to start with another version, but does not designate it as supported or compatible. Missing, invalid, or false values retain strict checking.
+
+The version opt-in bypasses only the launcher’s exact package-version check and the module’s exact PE timestamp/image-size identity gate. Package family, process identity, and x64 architecture checks remain mandatory. Feature profiles and per-target integrity checks remain mandatory, including instruction bytes and call context, structure, uniqueness, and ownership as applicable. Any failed, ambiguous, or unreadable feature validation disables that feature without writes or hooks. The option is experimental and does not make a new build compatible.
 
 ## Feature Scope
 
@@ -34,7 +36,7 @@ The former default C Zoom shortcut and F6-F10 shortcuts were verified in a local
 
 ## Security and Implementation Requirements
 
-- Before any write, verify the exact package, PE identity, and complete original instructions with their relevant context. Reject the target on any mismatch, ambiguity, or read error.
+- Before any write, verify the supported package and PE identity when strict mode is active, and always verify the feature’s complete profile and original instructions with their relevant context. The version opt-in does not bypass feature profiles. Reject a feature target on any mismatch, ambiguity, or read error.
 - Do not treat FOV, sensitivity, or other heap addresses from a single session as stable identities. Find the correct named object and verify its structure, range, and uniqueness.
 - Limit hooks to verified local input or rendering paths. Do not modify the server protocol, world time, saved world, player attributes, gamma, or persistent game objects.
 - Prepare and verify installation of multiple patches as a coordinated operation. During restoration, compare both the installed patch and the expected original bytes; never overwrite another party's change. Before freeing bridge memory, wait for active callbacks to finish and verify game-thread instruction pointers. If restoration is unsafe, leave the module loaded and retry it.
@@ -47,6 +49,6 @@ Requirements and the build command are documented in [README.md](README.md). Tes
 
 Read-only diagnostic tools for this build are in [diagnostics/](diagnostics/README.md). Reference RVAs and persistent findings for troubleshooting and future porting are in [FINDINGS.md](FINDINGS.md); the exact bytes for the supported profile remain in the source headers.
 
-Compatibility claims apply only to the listed build. Multiplayer, other versions, dimensions, and graphics modes are not designated as supported. After changing the input path or rendering profile, distinguish successful builds, automated tests, and practical in-game verification again.
+Compatibility claims apply only to the listed build, regardless of whether the version opt-in is enabled. Other versions, multiplayer, dimensions, and graphics modes are not designated as supported. After changing the input path or rendering profile, distinguish successful builds, automated tests, and practical in-game verification again.
 
 The gameplay/Zoom stutter changes (issue #30) and projection-based sensitivity handling (issue #55) pass isolated transition-timing, camera-projection scaling, sensitivity compare-and-swap/restoration, asynchronous diagnostic snapshots, blocked-writer shutdown, pending-restoration diagnostics, message-hook ownership, and input-aware wait tests. Sprint-jumping, camera movement at FOV 1, Zoom transitions in both directions, wheel adjustments, and screen/focus changes still require an in-game retest; automated checks do not establish smooth live frame pacing.

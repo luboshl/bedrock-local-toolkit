@@ -125,6 +125,7 @@ namespace
         int fullBrightKey = VK_F8;
         int indicatorKey = VK_F9;
         int exitKey = VK_F10;
+        bool allowUnsupportedGameVersion = false;
     };
     ZoomConfig g_zoomConfig;
 
@@ -351,6 +352,7 @@ namespace
     volatile LONG g_zoomReleasePassPending = 0;
     uintptr_t g_gameModuleBase = 0;
     bool g_supportedBuild = false;
+    bool g_versionMismatchBypassed = false;
     volatile LONG g_zoomReadiness = 0; // 0 starting, 1 searching, 2 ready, 3 refused
     std::wstring g_statusLogPath;
     std::wstring g_nametagLogPath;
@@ -1113,6 +1115,13 @@ namespace
             else if (_wcsicmp(value.c_str(), L"false") == 0) loaded.showNametagWhenHudHidden = false;
             else return false;
         }
+        if (ReadToolkitConfigValue(L"Compatibility", L"AllowUnsupportedGameVersion", value, configPath))
+        {
+            value = TrimWhitespace(value);
+            if (_wcsicmp(value.c_str(), L"true") == 0) loaded.allowUnsupportedGameVersion = true;
+            else if (_wcsicmp(value.c_str(), L"false") == 0) loaded.allowUnsupportedGameVersion = false;
+            else return false;
+        }
         if (!readKey(L"Zoom", loaded.zoomKey) || !readKey(L"Nametag", loaded.nametagKey) ||
             !readKey(L"AlwaysDay", loaded.alwaysDayKey) || !readKey(L"FullBright", loaded.fullBrightKey) ||
             !readKey(L"StatusIndicator", loaded.indicatorKey) || !readKey(L"SafeDetach", loaded.exitKey)) return false;
@@ -1271,16 +1280,35 @@ namespace
     bool InitializeFovBuild()
     {
         std::wstring package;
-        if (!ReadCurrentPackageFullName(package) || package != fov::kPackage) return false;
+        if (!ReadCurrentPackageFullName(package)) return false;
+        constexpr wchar_t expectedPackageFamilySuffix[] = L"_x64__8wekyb3d8bbwe";
+        const size_t familySuffixLength = std::size(expectedPackageFamilySuffix) - 1;
+        const bool expectedPackageFamily = package.rfind(L"Microsoft.MinecraftUWP_", 0) == 0 &&
+            package.size() >= familySuffixLength &&
+            package.compare(package.size() - familySuffixLength, familySuffixLength,
+                expectedPackageFamilySuffix) == 0;
+        if (!expectedPackageFamily) return false;
+        const bool expectedPackageVersion = package == fov::kPackage;
+        if (!expectedPackageVersion && !g_zoomConfig.allowUnsupportedGameVersion) return false;
         const HMODULE module = GetModuleHandleW(kExpectedGameModuleName);
         if (module == nullptr) return false;
         const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
         if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 4096) return false;
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(reinterpret_cast<uintptr_t>(module) + dos->e_lfanew);
         if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-            nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
-            nt->FileHeader.TimeDateStamp != fov::kImageTimestamp || nt->OptionalHeader.SizeOfImage != fov::kImageSize) return false;
+            nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return false;
         g_gameModuleBase = reinterpret_cast<uintptr_t>(module);
+        const bool expectedPeIdentity = nt->FileHeader.TimeDateStamp == fov::kImageTimestamp &&
+            nt->OptionalHeader.SizeOfImage == fov::kImageSize;
+        if (!expectedPeIdentity)
+        {
+            if (!g_zoomConfig.allowUnsupportedGameVersion) return false;
+            // The opt-in permits module startup only. Feature initializers still reject unverified profiles.
+            g_supportedBuild = false;
+            g_versionMismatchBypassed = true;
+            InterlockedExchange(&g_zoomReadiness, 3);
+            return true;
+        }
         for (const uintptr_t rva : {fov::kOptionsVtableRva, fov::kValueVtableRva})
         {
             uintptr_t method = 0;
@@ -3650,6 +3678,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI StartGameMod(LPVOID)
     for (auto& blocked : g_shortcutNeedsRelease) InterlockedExchange(&blocked, 0);
     InterlockedExchange(&g_zoomReleasePassPending, 0);
     g_supportedBuild = false;
+    g_versionMismatchBypassed = false;
     g_gameModuleBase = 0;
     InterlockedExchange(&g_zoomReadiness, 0);
     InterlockedExchange(&nametag::readiness, 0);
@@ -3688,6 +3717,11 @@ extern "C" __declspec(dllexport) DWORD WINAPI StartGameMod(LPVOID)
         InterlockedExchange(&g_zoomReadiness, 3);
         LogZoomStatus("unsupported-build");
         SetOverlayMessage(L"Unsupported Minecraft build; Zoom will not change memory", RGB(255, 170, 110));
+    }
+    else if (g_versionMismatchBypassed)
+    {
+        LogZoomStatus("unsupported-build-version-bypass-enabled");
+        SetOverlayMessage(L"Experimental mode: unsupported build; features remain profile-gated", RGB(255, 170, 110));
     }
     else
     {

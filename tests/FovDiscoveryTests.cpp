@@ -39,11 +39,86 @@ namespace
 
     void TestToolkitConfig()
     {
+        BuildIdentity supportedIdentity{fov::kPackage, true, true, IMAGE_FILE_MACHINE_AMD64,
+            IMAGE_NT_OPTIONAL_HDR64_MAGIC, fov::kImageTimestamp, fov::kImageSize};
+        Check(EvaluateBuildStartup(supportedIdentity, false) == BuildStartupMode::Supported,
+            "supported package and PE identity pass strict startup");
+
+        BuildIdentity otherPackageVersion = supportedIdentity;
+        otherPackageVersion.packageFullName =
+            L"Microsoft.MinecraftUWP_1.26.5204.0_x64__8wekyb3d8bbwe";
+        Check(EvaluateBuildStartup(otherPackageVersion, false) == BuildStartupMode::Rejected &&
+            EvaluateBuildStartup(otherPackageVersion, true) == BuildStartupMode::Supported,
+            "package version mismatch is strict by default and opt-in only when PE identity matches");
+
+        BuildIdentity otherPeIdentity = supportedIdentity;
+        ++otherPeIdentity.timestamp;
+        Check(EvaluateBuildStartup(otherPeIdentity, false) == BuildStartupMode::Rejected,
+            "PE identity mismatch is rejected in strict mode");
+        const BuildStartupMode diagnosticMode = EvaluateBuildStartup(otherPeIdentity, true);
+        Check(diagnosticMode == BuildStartupMode::Diagnostic &&
+            !AllowsBuildFeatureInitialization(diagnosticMode),
+            "opt-in PE mismatch starts diagnostic mode without enabling features");
+        const bool previousSupportedBuild = g_supportedBuild;
+        g_supportedBuild = AllowsBuildFeatureInitialization(diagnosticMode);
+        fov::Target diagnosticTarget{};
+        float diagnosticValues[5]{};
+        Check(!ReadVerifiedTarget(0, diagnosticTarget, diagnosticValues) && !g_supportedBuild &&
+            !InstallMinecraftGameUpdateHook() &&
+            !nametag::ValidateProfile(g_gameModuleBase, g_supportedBuild),
+            "PE-mismatch diagnostic mode disables feature and hook initialization");
+        g_supportedBuild = previousSupportedBuild;
+
+        BuildIdentity wrongFamily = otherPeIdentity;
+        wrongFamily.packageFullName = L"Microsoft.MinecraftUWP_1.26.5204.0_x64__wrongfamily";
+        Check(EvaluateBuildStartup(wrongFamily, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses package-family identity");
+        BuildIdentity wrongArchitecture = otherPeIdentity;
+        wrongArchitecture.machine = IMAGE_FILE_MACHINE_I386;
+        Check(EvaluateBuildStartup(wrongArchitecture, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses PE architecture");
+        BuildIdentity wrongOptionalHeader = otherPeIdentity;
+        wrongOptionalHeader.optionalMagic = IMAGE_NT_OPTIONAL_HDR32_MAGIC;
+        Check(EvaluateBuildStartup(wrongOptionalHeader, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses PE optional-header architecture");
+        BuildIdentity invalidHeaders = otherPeIdentity;
+        invalidHeaders.peHeadersValid = false;
+        Check(EvaluateBuildStartup(invalidHeaders, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses invalid PE headers");
+        BuildIdentity missingModule = otherPeIdentity;
+        missingModule.gameModulePresent = false;
+        Check(EvaluateBuildStartup(missingModule, true) == BuildStartupMode::Rejected,
+            "opt-in never bypasses game module identity");
+
+        Check(MayDetachUnsupportedBuild(true, true, true, false),
+            "diagnostic mode can request safe detach from the foreground game window");
+        Check(!MayDetachUnsupportedBuild(true, false, true, false) &&
+            !MayDetachUnsupportedBuild(true, true, false, false) &&
+            !MayDetachUnsupportedBuild(true, true, true, true) &&
+            !MayDetachUnsupportedBuild(false, true, true, false),
+            "diagnostic detach requires foreground, a new key press, and an unsupported-build session");
         TemporaryToolkitConfig config;
         Check(LoadZoomConfigFromPath(config.Path()), "load defaults without a config");
         Check(g_zoomConfig.firstPersonFov == 25.0f && g_zoomConfig.thirdPersonFov == 29.0f &&
             g_zoomConfig.transitionDurationMs == 75 && g_zoomConfig.mouseSensitivity == 45.0f &&
             g_zoomConfig.zoomKey == 'T', "requested Zoom defaults");
+        Check(!g_zoomConfig.allowUnsupportedGameVersion, "unsupported game version is refused by default");
+        config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L" TrUe ");
+        Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.allowUnsupportedGameVersion,
+            "unsupported game version opt-in accepts true case-insensitively");
+        config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L"false");
+        Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.allowUnsupportedGameVersion,
+            "unsupported game version opt-in can be disabled");
+        config.Set(L"Zoom", L"FirstPersonFov", L"17.5");
+        config.Set(L"Shortcuts", L"Zoom", L"Z");
+        config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L"invalid");
+        Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.allowUnsupportedGameVersion &&
+            g_zoomConfig.firstPersonFov == 17.5f && g_zoomConfig.zoomKey == 'Z',
+            "invalid opt-in defaults to strict mode without discarding other settings");
+        config.Set(L"Zoom", L"FirstPersonFov", nullptr);
+        config.Set(L"Shortcuts", L"Zoom", nullptr);
+        config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L"false");
+        Check(LoadZoomConfigFromPath(config.Path()), "valid compatibility setting restores config loading");
         Check(g_zoomConfig.showNametagWhenHudHidden, "HUD-hidden nametag enabled by default");
         config.Set(L"nametag", L"show_when_hud_hidden", L" false ");
         Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.showNametagWhenHudHidden,
@@ -1218,7 +1293,11 @@ int main()
             bad = .001f;
             std::memcpy(fixture.memory + 1056, &bad, 4);
             g_supportedBuild = false;
+            g_zoomConfig.allowUnsupportedGameVersion = true;
             Check(!ReadVerifiedTarget(fixture.target.options, verified, values) && !StartFovScan(), "unverified build refused");
+            Check(!nametag::ValidateProfile(g_gameModuleBase, g_supportedBuild),
+                "version opt-in does not bypass the Nametag profile gate");
+            g_zoomConfig.allowUnsupportedGameVersion = false;
             g_supportedBuild = true;
             DWORD previous = 0;
             VirtualProtect(fixture.memory, 4096, PAGE_NOACCESS, &previous);

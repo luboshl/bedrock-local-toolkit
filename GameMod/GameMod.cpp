@@ -125,6 +125,7 @@ namespace
         int fullBrightKey = VK_F8;
         int indicatorKey = VK_F9;
         int exitKey = VK_F10;
+        bool allowUnsupportedGameVersion = false;
     };
     ZoomConfig g_zoomConfig;
 
@@ -351,6 +352,7 @@ namespace
     volatile LONG g_zoomReleasePassPending = 0;
     uintptr_t g_gameModuleBase = 0;
     bool g_supportedBuild = false;
+    bool g_versionMismatchBypassed = false;
     volatile LONG g_zoomReadiness = 0; // 0 starting, 1 searching, 2 ready, 3 refused
     std::wstring g_statusLogPath;
     std::wstring g_nametagLogPath;
@@ -423,6 +425,11 @@ namespace
     bool ModuleShortcutsAllowed(HWND gameWindow)
     {
         return IsGameActive(gameWindow) && screens::AllowsShortcuts();
+    }
+
+    bool MayDetachUnsupportedBuild(bool diagnosticMode, bool gameForeground, bool keyDown, bool keyWasDown)
+    {
+        return diagnosticMode && gameForeground && keyDown && !keyWasDown;
     }
 
     bool ShortcutNeedsRelease(int key)
@@ -1113,6 +1120,12 @@ namespace
             else if (_wcsicmp(value.c_str(), L"false") == 0) loaded.showNametagWhenHudHidden = false;
             else return false;
         }
+        if (ReadToolkitConfigValue(L"Compatibility", L"AllowUnsupportedGameVersion", value, configPath))
+        {
+            value = TrimWhitespace(value);
+            if (_wcsicmp(value.c_str(), L"true") == 0) loaded.allowUnsupportedGameVersion = true;
+            else loaded.allowUnsupportedGameVersion = false;
+        }
         if (!readKey(L"Zoom", loaded.zoomKey) || !readKey(L"Nametag", loaded.nametagKey) ||
             !readKey(L"AlwaysDay", loaded.alwaysDayKey) || !readKey(L"FullBright", loaded.fullBrightKey) ||
             !readKey(L"StatusIndicator", loaded.indicatorKey) || !readKey(L"SafeDetach", loaded.exitKey)) return false;
@@ -1268,19 +1281,77 @@ namespace
             bytesRead == sizeof(value);
     }
 
+    enum class BuildStartupMode
+    {
+        Rejected,
+        Supported,
+        Diagnostic
+    };
+
+    struct BuildIdentity
+    {
+        std::wstring packageFullName;
+        bool gameModulePresent = false;
+        bool peHeadersValid = false;
+        WORD machine = IMAGE_FILE_MACHINE_UNKNOWN;
+        WORD optionalMagic = 0;
+        DWORD timestamp = 0;
+        DWORD imageSize = 0;
+    };
+
+    BuildStartupMode EvaluateBuildStartup(const BuildIdentity& identity, bool allowUnsupportedGameVersion)
+    {
+        constexpr wchar_t packagePrefix[] = L"Microsoft.MinecraftUWP_";
+        constexpr wchar_t packageFamilySuffix[] = L"_x64__8wekyb3d8bbwe";
+        const size_t prefixLength = std::size(packagePrefix) - 1;
+        const size_t suffixLength = std::size(packageFamilySuffix) - 1;
+        const bool expectedPackageFamily =
+            identity.packageFullName.rfind(packagePrefix, 0) == 0 &&
+            identity.packageFullName.size() > prefixLength + suffixLength &&
+            identity.packageFullName.compare(identity.packageFullName.size() - suffixLength,
+                suffixLength, packageFamilySuffix) == 0;
+        if (!expectedPackageFamily || !identity.gameModulePresent || !identity.peHeadersValid ||
+            identity.machine != IMAGE_FILE_MACHINE_AMD64 ||
+            identity.optionalMagic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+            return BuildStartupMode::Rejected;
+
+        const bool expectedPackageVersion = identity.packageFullName == fov::kPackage;
+        const bool expectedPeIdentity = identity.timestamp == fov::kImageTimestamp &&
+            identity.imageSize == fov::kImageSize;
+        if (!allowUnsupportedGameVersion && (!expectedPackageVersion || !expectedPeIdentity))
+            return BuildStartupMode::Rejected;
+        return expectedPeIdentity ? BuildStartupMode::Supported : BuildStartupMode::Diagnostic;
+    }
+
+    bool AllowsBuildFeatureInitialization(BuildStartupMode mode)
+    {
+        return mode == BuildStartupMode::Supported;
+    }
+
     bool InitializeFovBuild()
     {
         std::wstring package;
-        if (!ReadCurrentPackageFullName(package) || package != fov::kPackage) return false;
+        if (!ReadCurrentPackageFullName(package)) return false;
         const HMODULE module = GetModuleHandleW(kExpectedGameModuleName);
         if (module == nullptr) return false;
         const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
         if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 4096) return false;
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(reinterpret_cast<uintptr_t>(module) + dos->e_lfanew);
-        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-            nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
-            nt->FileHeader.TimeDateStamp != fov::kImageTimestamp || nt->OptionalHeader.SizeOfImage != fov::kImageSize) return false;
+        const BuildIdentity identity{package, true, nt->Signature == IMAGE_NT_SIGNATURE,
+            nt->FileHeader.Machine, nt->OptionalHeader.Magic,
+            nt->FileHeader.TimeDateStamp, nt->OptionalHeader.SizeOfImage};
+        const BuildStartupMode startupMode =
+            EvaluateBuildStartup(identity, g_zoomConfig.allowUnsupportedGameVersion);
+        if (startupMode == BuildStartupMode::Rejected) return false;
         g_gameModuleBase = reinterpret_cast<uintptr_t>(module);
+        g_supportedBuild = false;
+        if (startupMode == BuildStartupMode::Diagnostic)
+        {
+            // The opt-in permits module startup only. Feature initializers still reject unverified profiles.
+            g_versionMismatchBypassed = true;
+            InterlockedExchange(&g_zoomReadiness, 3);
+            return true;
+        }
         for (const uintptr_t rva : {fov::kOptionsVtableRva, fov::kValueVtableRva})
         {
             uintptr_t method = 0;
@@ -3201,7 +3272,7 @@ namespace
         bool f7WasDown = (GetAsyncKeyState(g_zoomConfig.nametagKey) & 0x8000) != 0;
         bool indicatorWasDown = false;
         bool escapeWasDown = false;
-        bool detachWasDown = false;
+        bool detachWasDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
         bool zoomNeedsRelease = false;
         HANDLE workerTimer = CreateWaitableTimerExW(nullptr, nullptr,
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
@@ -3218,15 +3289,18 @@ namespace
         MSG message{};
 
         g_trackedGameWindow = GetGameWindow();
-        g_zoomKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL,
-            ZoomKeyboardHookProc, g_module, 0);
-        if (g_zoomKeyboardHook == nullptr)
+        if (g_supportedBuild)
         {
-            LogZoomStatus("zoom-keyboard-hook-failed");
-        }
-        else
-        {
-            LogZoomStatus("zoom-keyboard-hooked");
+            g_zoomKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL,
+                ZoomKeyboardHookProc, g_module, 0);
+            if (g_zoomKeyboardHook == nullptr)
+            {
+                LogZoomStatus("zoom-keyboard-hook-failed");
+            }
+            else
+            {
+                LogZoomStatus("zoom-keyboard-hooked");
+            }
         }
 
         while (InterlockedCompareExchange(&g_stopRequested, 0, 0) == 0)
@@ -3251,7 +3325,7 @@ namespace
             const HWND gameWindow = GetGameWindow();
             g_trackedGameWindow = gameWindow;
             const ULONGLONG loopTime = GetTickCount64();
-            if (!g_zoom.transitionActive && loopTime - lastRawApiHookScanAt >= 2'000)
+            if (g_supportedBuild && !g_zoom.transitionActive && loopTime - lastRawApiHookScanAt >= 2'000)
             {
                 const unsigned int patched = InstallRawInputApiHooks();
                 if (patched > 0)
@@ -3269,7 +3343,7 @@ namespace
                 }
                 lastRawApiHookScanAt = loopTime;
             }
-            if (!g_zoom.transitionActive && loopTime - lastGameInputHookScanAt >= 2'000)
+            if (g_supportedBuild && !g_zoom.transitionActive && loopTime - lastGameInputHookScanAt >= 2'000)
             {
                 if (InstallGameInputApiHooks())
                 {
@@ -3283,6 +3357,16 @@ namespace
                 lastGameInputHookScanAt = loopTime;
             }
             const bool foreground = IsGameActive(gameWindow);
+            if (g_versionMismatchBypassed)
+            {
+                const bool detachDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
+                if (MayDetachUnsupportedBuild(true, foreground, detachDown, detachWasDown))
+                {
+                    LogZoomStatus("unsupported-build-diagnostic-detach-requested");
+                    InterlockedExchange(&g_stopRequested, 1);
+                }
+                detachWasDown = detachDown;
+            }
             const bool active = foreground && screens::AllowsShortcuts();
             if (active != shortcutsWereAllowed)
             {
@@ -3650,6 +3734,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI StartGameMod(LPVOID)
     for (auto& blocked : g_shortcutNeedsRelease) InterlockedExchange(&blocked, 0);
     InterlockedExchange(&g_zoomReleasePassPending, 0);
     g_supportedBuild = false;
+    g_versionMismatchBypassed = false;
     g_gameModuleBase = 0;
     InterlockedExchange(&g_zoomReadiness, 0);
     InterlockedExchange(&nametag::readiness, 0);
@@ -3688,6 +3773,11 @@ extern "C" __declspec(dllexport) DWORD WINAPI StartGameMod(LPVOID)
         InterlockedExchange(&g_zoomReadiness, 3);
         LogZoomStatus("unsupported-build");
         SetOverlayMessage(L"Unsupported Minecraft build; Zoom will not change memory", RGB(255, 170, 110));
+    }
+    else if (g_versionMismatchBypassed)
+    {
+        LogZoomStatus("unsupported-build-version-bypass-enabled");
+        SetOverlayMessage(L"Experimental mode: unsupported build; features remain profile-gated", RGB(255, 170, 110));
     }
     else
     {

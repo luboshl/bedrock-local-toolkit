@@ -44,6 +44,19 @@ namespace
         Check(g_zoomConfig.firstPersonFov == 25.0f && g_zoomConfig.thirdPersonFov == 29.0f &&
             g_zoomConfig.transitionDurationMs == 75 && g_zoomConfig.mouseSensitivity == 45.0f &&
             g_zoomConfig.zoomKey == 'T', "requested Zoom defaults");
+        Check(!g_zoomConfig.allowUnsupportedGameVersion, "unsupported game version is refused by default");
+        config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L" TrUe ");
+        Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.allowUnsupportedGameVersion,
+            "unsupported game version opt-in accepts true case-insensitively");
+        config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L"false");
+        Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.allowUnsupportedGameVersion,
+            "unsupported game version opt-in can be disabled");
+        config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L"invalid");
+        g_zoomConfig = {};
+        Check(!LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.allowUnsupportedGameVersion,
+            "invalid opt-in setting keeps version checks strict");
+        config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L"false");
+        Check(LoadZoomConfigFromPath(config.Path()), "valid compatibility setting restores config loading");
         Check(g_zoomConfig.showNametagWhenHudHidden, "HUD-hidden nametag enabled by default");
         config.Set(L"nametag", L"show_when_hud_hidden", L" false ");
         Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.showNametagWhenHudHidden,
@@ -1218,7 +1231,11 @@ int main()
             bad = .001f;
             std::memcpy(fixture.memory + 1056, &bad, 4);
             g_supportedBuild = false;
+            g_zoomConfig.allowUnsupportedGameVersion = true;
             Check(!ReadVerifiedTarget(fixture.target.options, verified, values) && !StartFovScan(), "unverified build refused");
+            Check(!nametag::ValidateProfile(g_gameModuleBase, g_supportedBuild),
+                "version opt-in does not bypass the Nametag profile gate");
+            g_zoomConfig.allowUnsupportedGameVersion = false;
             g_supportedBuild = true;
             DWORD previous = 0;
             VirtualProtect(fixture.memory, 4096, PAGE_NOACCESS, &previous);

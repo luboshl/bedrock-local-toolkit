@@ -28,7 +28,8 @@ internal static class Program
     private sealed record ZoomConfig(float FirstPersonFov, float ThirdPersonFov,
         uint TransitionDurationMs, float MouseSensitivity,
         string Zoom, string Nametag, string AlwaysDay, string FullBright, string StatusIndicator, string SafeDetach,
-        bool ShowNametagWhenHudHidden, bool ShowFpsCounter);
+        bool ShowNametagWhenHudHidden, bool ShowFpsCounter,
+        bool AllowUnsupportedGameVersion = false);
 
     private static int Main()
     {
@@ -42,9 +43,16 @@ internal static class Program
                 $"third-person {zoomConfig.ThirdPersonFov}, transition {zoomConfig.TransitionDurationMs} ms, " +
                 $"sensitivity {zoomConfig.MouseSensitivity}; Zoom {zoomConfig.Zoom}, Nametag {zoomConfig.Nametag}, Always day {zoomConfig.AlwaysDay}, Full Bright {zoomConfig.FullBright}, " +
                 $"indicator {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}; " +
-                $"show nametag when HUD hidden {zoomConfig.ShowNametagWhenHudHidden}; FPS counter {zoomConfig.ShowFpsCounter}.");
+                $"show nametag when HUD hidden {zoomConfig.ShowNametagWhenHudHidden}; FPS counter {zoomConfig.ShowFpsCounter}; " +
+                $"allow unsupported game version {zoomConfig.AllowUnsupportedGameVersion}.");
+            if (zoomConfig.AllowUnsupportedGameVersion)
+            {
+                Console.Error.WriteLine(
+                    "WARNING: Unsupported-version mode is experimental. It does not make this game build compatible; " +
+                    "features remain disabled unless their existing safety profiles validate.");
+            }
 
-            var target = WaitForSupportedGame(TimeSpan.FromSeconds(90));
+            var target = WaitForSupportedGame(TimeSpan.FromSeconds(90), zoomConfig.AllowUnsupportedGameVersion);
             Console.WriteLine($"Verified target: PID {target.ProcessId}, {target.PackageFullName}, x64.");
 
             using var game = NativeMethods.OpenProcess(RequiredRemoteLoadAccess, false, target.ProcessId);
@@ -57,7 +65,7 @@ internal static class Program
             }
 
             var recheckedTarget = InspectProcess(game, target.ProcessId);
-            EnsureSupportedTarget(recheckedTarget);
+            EnsureSupportedTarget(recheckedTarget, zoomConfig.AllowUnsupportedGameVersion);
             Console.WriteLine("Remote-load access check passed.");
 
             var dllPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "GameMod.dll"));
@@ -104,6 +112,7 @@ internal static class Program
         var zoomValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var shortcutValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var nametagValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var compatibilityValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var fpsCounterValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         Dictionary<string, string>? sectionValues = null;
         foreach (var rawLine in File.ReadLines(path))
@@ -116,6 +125,7 @@ internal static class Program
                 sectionValues = string.Equals(section, "Zoom", StringComparison.OrdinalIgnoreCase) ? zoomValues :
                     string.Equals(section, "Shortcuts", StringComparison.OrdinalIgnoreCase) ? shortcutValues :
                     string.Equals(section, "nametag", StringComparison.OrdinalIgnoreCase) ? nametagValues :
+                    string.Equals(section, "Compatibility", StringComparison.OrdinalIgnoreCase) ? compatibilityValues :
                     string.Equals(section, "fps_counter", StringComparison.OrdinalIgnoreCase) ? fpsCounterValues : null;
                 continue;
             }
@@ -164,7 +174,9 @@ internal static class Program
             ReadKey("AlwaysDay", defaults.AlwaysDay), ReadKey("FullBright", defaults.FullBright),
             ReadKey("StatusIndicator", defaults.StatusIndicator), ReadKey("SafeDetach", defaults.SafeDetach),
             ReadBoolean(nametagValues, "show_when_hud_hidden", defaults.ShowNametagWhenHudHidden),
-            showFpsCounter);
+            showFpsCounter,
+            compatibilityValues.TryGetValue("AllowUnsupportedGameVersion", out var allowUnsupported) &&
+                bool.TryParse(allowUnsupported, out var allowUnsupportedVersion) && allowUnsupportedVersion);
         var keys = new[] { config.Zoom, config.Nametag, config.AlwaysDay, config.FullBright, config.StatusIndicator, config.SafeDetach };
         if (keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != keys.Length)
             throw new InvalidDataException($"Keyboard shortcuts in {path} must be unique.");
@@ -180,7 +192,7 @@ internal static class Program
         return value is "SPACE" or "TAB" or "INSERT" or "HOME" or "END" or "PAGEUP" or "PAGEDOWN" or "DELETE" or "BACKSPACE";
     }
 
-    private static TargetInfo WaitForSupportedGame(TimeSpan timeout)
+    private static TargetInfo WaitForSupportedGame(TimeSpan timeout, bool allowUnsupportedGameVersion)
     {
         var deadline = DateTime.UtcNow + timeout;
         var waitingMessageWritten = false;
@@ -203,7 +215,7 @@ internal static class Program
                         }
 
                         var candidate = InspectProcess(queryHandle, process.Id);
-                        EnsureSupportedTarget(candidate);
+                        EnsureSupportedTarget(candidate, allowUnsupportedGameVersion);
                         return candidate;
                     }
                 }
@@ -235,14 +247,20 @@ internal static class Program
         return new TargetInfo(processId, imagePath, packageFullName, packageFamilyName, processMachine, nativeMachine);
     }
 
-    private static void EnsureSupportedTarget(TargetInfo target)
+    private static void EnsureSupportedTarget(TargetInfo target, bool allowUnsupportedGameVersion)
     {
         if (!string.Equals(Path.GetFileName(target.ImagePath), ProcessName + ".exe", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"Rejected process with unexpected path: {target.ImagePath}");
         }
 
-        if (!string.Equals(target.PackageFamilyName, ExpectedPackageFamily, StringComparison.Ordinal) ||
+        if (!string.Equals(target.PackageFamilyName, ExpectedPackageFamily, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Rejected package family '{target.PackageFamilyName}'; expected '{ExpectedPackageFamily}'. The module was not loaded.");
+        }
+
+        if (!allowUnsupportedGameVersion &&
             !string.Equals(target.PackageFullName, ExpectedPackageFullName, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(

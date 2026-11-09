@@ -39,6 +39,13 @@ namespace
 
     void TestToolkitConfig()
     {
+        Check(MayDetachUnsupportedBuild(true, true, true, false),
+            "diagnostic mode can request safe detach from the foreground game window");
+        Check(!MayDetachUnsupportedBuild(true, false, true, false) &&
+            !MayDetachUnsupportedBuild(true, true, false, false) &&
+            !MayDetachUnsupportedBuild(true, true, true, true) &&
+            !MayDetachUnsupportedBuild(false, true, true, false),
+            "diagnostic detach requires foreground, a new key press, and an unsupported-build session");
         TemporaryToolkitConfig config;
         Check(LoadZoomConfigFromPath(config.Path()), "load defaults without a config");
         Check(g_zoomConfig.firstPersonFov == 25.0f && g_zoomConfig.thirdPersonFov == 29.0f &&
@@ -51,10 +58,14 @@ namespace
         config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L"false");
         Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.allowUnsupportedGameVersion,
             "unsupported game version opt-in can be disabled");
+        config.Set(L"Zoom", L"FirstPersonFov", L"17.5");
+        config.Set(L"Shortcuts", L"Zoom", L"Z");
         config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L"invalid");
-        g_zoomConfig = {};
-        Check(!LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.allowUnsupportedGameVersion,
-            "invalid opt-in setting keeps version checks strict");
+        Check(LoadZoomConfigFromPath(config.Path()) && !g_zoomConfig.allowUnsupportedGameVersion &&
+            g_zoomConfig.firstPersonFov == 17.5f && g_zoomConfig.zoomKey == 'Z',
+            "invalid opt-in defaults to strict mode without discarding other settings");
+        config.Set(L"Zoom", L"FirstPersonFov", nullptr);
+        config.Set(L"Shortcuts", L"Zoom", nullptr);
         config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L"false");
         Check(LoadZoomConfigFromPath(config.Path()), "valid compatibility setting restores config loading");
         Check(g_zoomConfig.showNametagWhenHudHidden, "HUD-hidden nametag enabled by default");

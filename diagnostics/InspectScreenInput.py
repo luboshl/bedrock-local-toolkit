@@ -12,7 +12,7 @@ from pathlib import Path
 def inspect_snapshot(directory):
     root = Path(directory)
     metadata = json.loads((root / "image.json").read_text())
-    if metadata.get("timestamp") != "0x6ab54e37" or metadata.get("imageSize") != "0x12c01000":
+    if metadata.get("timestamp") != "0x6aed1906" or metadata.get("imageSize") != "0x1383d000":
         raise RuntimeError("Unsupported snapshot identity")
     base = int(metadata["moduleBase"], 16)
     sections = [(base + rva, size, (root / f"{name[1:]}.bin").read_bytes())
@@ -35,13 +35,13 @@ def inspect_snapshot(directory):
         rva = constants[name + "Rva"]
         checks.append({"context": name, "rva": hex(rva), "size": len(expected),
                        "matches": read(base + rva, len(expected)) == expected})
-    for table, slot, method in (("Client", 0x748, "ClientStack"), ("Game", 0x3C8, "GameStack"),
+    for table, slot, method in (("Client", 0x730, "ClientStack"), ("Game", 0x3C8, "GameStack"),
                                 ("Stack", 0x1A8, "TopScene"), ("Scene", 0x1D0, "SceneName"),
-                                ("Scene", 0x280, "Transition"),
+                                ("Scene", 0x288, "Transition"),
                                 ("Background", 0x1B8, "BackgroundName"),
                                 ("Background", 0x118, "False"),
-                                ("Background", 0x228, "False"),
-                                ("Background", 0x280, "False")):
+                                ("Background", 0x230, "False"),
+                                ("Background", 0x288, "False")):
         address = base + constants[f"k{table}VtableRva"] + slot
         checks.append({"context": f"{table} vtable + {slot:#x}",
                        "matches": struct.unpack("<Q", read(address, 8))[0] == base + constants[f"k{method}Rva"]})

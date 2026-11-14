@@ -11,7 +11,7 @@ internal static class Program
 {
     private const string ProcessName = "Minecraft.Windows";
     private const string ExpectedPackageFamily = "Microsoft.MinecraftUWP_8wekyb3d8bbwe";
-    private const string ExpectedPackageFullName = "Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe";
+    private const string ExpectedPackageFullName = "Microsoft.MinecraftUWP_1.26.6301.0_x64__8wekyb3d8bbwe";
     private const ushort ImageFileMachineUnknown = 0;
     private const ushort ImageFileMachineAmd64 = 0x8664;
     private const uint ErrorInsufficientBuffer = 122;
@@ -90,7 +90,7 @@ internal static class Program
 
             LoadAndStartModule(game, targetProcess, dllPath, preloadedModule);
             Console.WriteLine("GameMod.dll is loaded and initialization has started.");
-            Console.WriteLine("Use only in a local single-player world. If sensitivity is verified, it will change during Zoom and be restored when Zoom ends; otherwise, Zoom continues without changing sensitivity. Use the mouse wheel to adjust FOV in 5° increments within 1–120°; the wheel is captured while Zoom is active. Releasing the Zoom key, pressing Esc, or losing focus smoothly restores the original FOV. Nametag displays your name in both third-person views and is occluded by blocks. Preparation starts automatically when the module loads. The detach key first restores FOV, any changed sensitivity, and the Nametag, Always day, and Full Bright rendering hooks. Always day switches local rendering to noon; the default key is F6. Full Bright brightens the local light texture; the default key is F8. The new feature's result is awaiting in-game verification.");
+            Console.WriteLine("Use only in a local single-player world. If sensitivity is verified, it will change during Zoom and be restored when Zoom ends; otherwise, Zoom continues without changing sensitivity. Use the mouse wheel to adjust FOV in 5° increments within 1–120°; the wheel is captured while Zoom is active. Releasing the Zoom key, pressing Esc, or losing focus smoothly restores the original FOV. Nametag displays your name in both third-person views and is occluded by blocks. Preparation starts automatically when the module loads. The detach key first restores FOV, any changed sensitivity, and the Nametag, Always day, and Full Bright rendering hooks. Always day switches local rendering to noon; the default key is F6. Full Bright brightens the local light texture; the default key is F8.");
             Console.WriteLine($"Run diagnostics: {Path.Combine(AppContext.BaseDirectory, $"zoom-status-{target.ProcessId}.log")}");
             Console.WriteLine($"Nametag diagnostics: {Path.Combine(AppContext.BaseDirectory, $"nametag-status-{target.ProcessId}.log")}");
             Console.WriteLine($"Always day diagnostics: {Path.Combine(AppContext.BaseDirectory, $"always-day-status-{target.ProcessId}.log")}");

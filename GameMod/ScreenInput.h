@@ -81,15 +81,15 @@ namespace screens
             Code(base, kStackConstructorRva, kStackConstructorBytes) &&
             Code(base, kClientConstructorRva, kClientConstructorBytes) &&
             Code(base, kClientGameRva, kClientGameBytes) &&
-            Slot(base, kClientVtableRva, 0x748, kClientStackRva) &&
+            Slot(base, kClientVtableRva, 0x730, kClientStackRva) &&
             Slot(base, kGameVtableRva, 0x3C8, kGameStackRva) &&
             Slot(base, kStackVtableRva, 0x1A8, kTopSceneRva) &&
             Slot(base, kSceneVtableRva, 0x1D0, kSceneNameRva) &&
-            Slot(base, kSceneVtableRva, 0x280, kTransitionRva) &&
+            Slot(base, kSceneVtableRva, 0x288, kTransitionRva) &&
             Slot(base, kBackgroundVtableRva, 0x1B8, kBackgroundNameRva) &&
             Slot(base, kBackgroundVtableRva, 0x118, kFalseRva) &&
-            Slot(base, kBackgroundVtableRva, 0x228, kFalseRva) &&
-            Slot(base, kBackgroundVtableRva, 0x280, kFalseRva);
+            Slot(base, kBackgroundVtableRva, 0x230, kFalseRva) &&
+            Slot(base, kBackgroundVtableRva, 0x288, kFalseRva);
         return profileValid;
     }
 

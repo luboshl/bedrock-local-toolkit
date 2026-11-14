@@ -13,7 +13,10 @@ prepare MACRO
     push rbx
     push rdi
     push r12
-    sub rsp,80h
+    push rbp
+    sub rsp,88h
+    mov qword ptr [rsp+70h],r8
+    lea rbp,[rsp-48h]
     mov rbx,rdx
     mov r12,r8
     lea rdi,[rdx+8]
@@ -54,18 +57,16 @@ InvokeLoopExitBridge ENDP
 
 InvokeNamesMaskBridge PROC
     prepare
-    mov qword ptr [rsp+60h],rbp
     mov rbp,r8
-    sub rbp,39B4h
+    sub rbp,2F1Ch
     mov al,dl
     jmp rcx
 InvokeNamesMaskBridge ENDP
 
 NamesMaskContinueTest PROC
     ; Continue the actual native AND and store without touching other metadata.
-    and cl,al
-    mov byte ptr [r9+160],cl
-    mov rbp,qword ptr [rsp+60h]
+    and dl,al
+    mov byte ptr [r9+160],dl
     jmp capture
 NamesMaskContinueTest ENDP
 
@@ -87,6 +88,7 @@ HudCleanupTest PROC
 HudCleanupTest ENDP
 
 OwnContinueTest PROC
+    mov rax,qword ptr [rbx]
     mov byte ptr [r9+160],1
     jmp capture
 OwnContinueTest ENDP
@@ -119,7 +121,8 @@ capture:
     movdqu xmmword ptr [r9+112],xmm3
     movdqu xmmword ptr [r9+128],xmm4
     movdqu xmmword ptr [r9+144],xmm5
-    add rsp,80h
+    add rsp,88h
+    pop rbp
     pop r12
     pop rdi
     pop rbx

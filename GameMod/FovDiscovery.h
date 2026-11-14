@@ -9,16 +9,16 @@ namespace fov
 {
     // Read-only observations of the supported PE image and Options/FloatOption
     // objects. RVAs are relative to Minecraft.Windows.exe, never heap addresses.
-    constexpr wchar_t kPackage[] = L"Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe";
-    constexpr uint32_t kImageSize = 0x12C01000;
-    constexpr uint32_t kImageTimestamp = 0x6AB54E37;
-    constexpr uintptr_t kOptionsVtableRva = 0xE7FC490;
-    constexpr uintptr_t kValueVtableRva = 0xE778EF0;
+    constexpr wchar_t kPackage[] = L"Microsoft.MinecraftUWP_1.26.6301.0_x64__8wekyb3d8bbwe";
+    constexpr uint32_t kImageSize = 0x1383D000;
+    constexpr uint32_t kImageTimestamp = 0x6AED1906;
+    constexpr uintptr_t kOptionsVtableRva = 0xF277F10;
+    constexpr uintptr_t kValueVtableRva = 0xF09F160;
     constexpr uintptr_t kFovOptionOffset = 0x188;
-    // In the 1.26.5203.0 Options object, Camera sensitivity (mouse) is the
+    // In the 1.26.6301.0 Options object, Camera sensitivity (mouse) is the
     // FloatOption named ctrl_sensitivity2 / options.sensitivity. Its vtable
     // and strings are matched before reading its live value.
-    constexpr uintptr_t kMouseSensitivityVtableRva = 0xE778F20;
+    constexpr uintptr_t kMouseSensitivityVtableRva = 0xF09F190;
     constexpr uintptr_t kMouseSensitivityValueOffset = 0x18;
     constexpr uintptr_t kOptionsSearchBytes = 0x4000;
     constexpr uintptr_t kPatternOffset = 0x10;

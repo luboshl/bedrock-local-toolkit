@@ -113,10 +113,10 @@ namespace alwaysday
             if (!IsCode(base, std::get<0>(context), std::get<2>(context)) ||
                 !Matches(base + std::get<0>(context), std::get<1>(context), std::get<2>(context))) return false;
         const unsigned char cloudName[] = "CloudColor";
-        if (!Matches(base + 0xEBFFFA7, cloudName, sizeof(cloudName))) return false;
+        if (!Matches(base + 0xF563CB0, cloudName, sizeof(cloudName))) return false;
         float cycle = 0, phase = 0;
-        if (!nametag::Read(base + 0xE7FEF84, &cycle, sizeof(cycle)) || cycle != 24000.0f ||
-            !nametag::Read(base + 0xE7E14EC, &phase, sizeof(phase)) || phase != -0.25f) return false;
+        if (!nametag::Read(base + 0xF1527AC, &cycle, sizeof(cycle)) || cycle != 24000.0f ||
+            !nametag::Read(base + 0xF1527B0, &phase, sizeof(phase)) || phase != -0.25f) return false;
         for (const auto& caller : kRenderCallers)
             if (!IsCode(base, caller.contextRva, caller.size) ||
                 !Matches(base + caller.contextRva, caller.bytes.data(), caller.size)) return false;
@@ -162,8 +162,9 @@ namespace alwaysday
                     reinterpret_cast<uintptr_t>(&state->sunriseCallers[1]),
                     reinterpret_cast<uintptr_t>(&state->sunriseCallers[2]),
                     reinterpret_cast<uintptr_t>(&state->cameraSunriseCaller)});
+            // Sky colour: 0x78-byte frame, nested return and two bridge pushes.
             else if (kRenderCallers[i].returnRva == kSkyColourReturnRva)
-                requireParent(0xC0, {reinterpret_cast<uintptr_t>(&state->skyColourCaller),
+                requireParent(0x90, {reinterpret_cast<uintptr_t>(&state->skyColourCaller),
                     reinterpret_cast<uintptr_t>(&state->cameraSkyColourCaller)});
             else if (kRenderCallers[i].returnRva == kDirectionReturnRva)
                 requireParent(0x70, {reinterpret_cast<uintptr_t>(&state->directionCallers[0]),

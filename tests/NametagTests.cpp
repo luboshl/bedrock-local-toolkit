@@ -57,11 +57,11 @@ namespace
         InvokeOwnBridge(invocation.code, invocation.actor, invocation.actor, &invocation.observation);
         return 0;
     }
-    void CheckRegisters(const Observation& value, void* stub, uintptr_t actor, uintptr_t localPlayer, bool nativeCl = false, bool nativeEcx = false)
+    void CheckRegisters(const Observation& value, void* stub, uintptr_t actor, uintptr_t localPlayer, bool nativeCl = false, bool nativeEdx = false)
     {
-        Check(nativeEcx || (value.registers[1] & (nativeCl ? ~uintptr_t{0xFF} : ~uintptr_t{0})) ==
+        Check((value.registers[1] & (nativeCl ? ~uintptr_t{0xFF} : ~uintptr_t{0})) ==
             (reinterpret_cast<uintptr_t>(stub) & (nativeCl ? ~uintptr_t{0xFF} : ~uintptr_t{0})), "RCX restored except native CL result");
-        Check(value.registers[2] == actor && value.registers[3] == localPlayer, "RDX and R8 restored");
+        Check((nativeEdx || value.registers[2] == actor) && value.registers[3] == localPlayer, "RDX and R8 restored");
         Check(value.registers[4] == reinterpret_cast<uintptr_t>(&value), "R9 restored");
         Check(value.registers[5] == 0x2233445566778899 && value.registers[6] == 0x33445566778899AA, "R10 and R11 restored");
         const uint32_t vector[] = {0x11223344, 0x55667788, 0x12345678, 0x76543210};
@@ -240,11 +240,11 @@ int main()
                     const unsigned char expectedMask = callback ? (callback == reinterpret_cast<void*>(&ClobberTrue) ? 1 : 0) :
                         static_cast<unsigned char>(hidden ^ 1);
                     const unsigned char result = static_cast<unsigned char>(allowed) & expectedMask;
-                    Check(mask.selected == result && mask.registers[1] == ((allowed & ~0xFFu) | result),
-                        "metadata bridge preserves native names preference and ECX load, including native denial");
+                    Check(mask.selected == result && mask.registers[2] == ((allowed & ~0xFFu) | result),
+                        "metadata bridge preserves native names preference and EDX load, including native denial");
                     Check(mask.registers[0] == (uintptr_t{0x1122334455667700} | expectedMask), "metadata bridge changes only native AL result");
                     Check(((mask.flags & 0x40) != 0) == (result == 0), "native metadata AND flags preserved");
-                    // The displaced native ECX load is checked above.
+                    // The displaced native EDX load is checked above.
                     CheckRegisters(mask, executable.memory + 2048, hidden, reinterpret_cast<uintptr_t>(&allowed), false, true);
                     Check(state->active == 0, "metadata callback drains");
                 }

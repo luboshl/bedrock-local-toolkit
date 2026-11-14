@@ -4,12 +4,12 @@ namespace
 {
     struct ScreenFixture
     {
-        std::array<unsigned char, 0x5D8> client{};
-        std::array<unsigned char, 0x1D78> game{};
+        std::array<unsigned char, screens::kClientStackOffset + sizeof(uintptr_t)> client{};
+        std::array<unsigned char, screens::kGameStackOffset + sizeof(uintptr_t)> game{};
         std::array<unsigned char, 0x90> local{}, global{};
         std::array<screens::SceneEntry, 4> entries{};
         std::array<unsigned char, 0x48> scene{};
-        std::array<unsigned char, 0x461> view{};
+        std::array<unsigned char, screens::kViewTransitionOffset + 1> view{};
         std::array<unsigned char, 0x10> tree{};
         std::array<unsigned char, 0x40> root{};
         std::array<char, 64> heapName{};

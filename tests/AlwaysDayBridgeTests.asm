@@ -9,7 +9,7 @@ InvokeAlwaysDayPhase PROC
     sub rsp,100h
     mov qword ptr [rsp+58h],r9
     mov qword ptr [rsp+98h],r9
-    mov qword ptr [rsp+0A8h],r9
+    mov qword ptr [rsp+78h],r9
     call rcx
 AlwaysDayPhaseReturn LABEL NEAR
     add rsp,100h
@@ -22,7 +22,7 @@ InvokeAlwaysDayTime PROC
     mov rbx,rdx
     mov qword ptr [rsp+58h],r9
     mov qword ptr [rsp+98h],r9
-    mov qword ptr [rsp+0A8h],r9
+    mov qword ptr [rsp+78h],r9
     movsxd rax,dword ptr [rbx]
     movss xmm2,dword ptr [rbx+4]
     mov r11,33445566778899AAh
@@ -43,7 +43,7 @@ InvokeAlwaysDayRender PROC
     push rbp
     sub rsp,28h
     mov rbx,rdx
-    lea rbp,[rdx-37E8h]
+    lea rbp,[rdx-2CA0h]
     mov r10,r8
     movups xmm0,xmmword ptr [rdx]
     mov rax,1122334455667788h

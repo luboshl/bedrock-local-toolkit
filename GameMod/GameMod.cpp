@@ -1029,7 +1029,7 @@ namespace
         {
             char line[256]{};
             const int length = sprintf_s(line,
-                "pid=%lu event=%s status=%s ready=%ld enabled=%ld profile=4 source=%s return_rva=0x%llX noon_overrides=%lld\r\n",
+                "pid=%lu event=%s status=%s ready=%ld enabled=%ld profile=5 source=%s return_rva=0x%llX noon_overrides=%lld\r\n",
                 GetCurrentProcessId(), event, alwaysday::status,
                 InterlockedCompareExchange(&alwaysday::readiness, 0, 0),
                 InterlockedCompareExchange(&alwaysday::enabled, 0, 0),
@@ -1041,7 +1041,7 @@ namespace
         }
         char line[256]{};
         const int length = sprintf_s(line,
-            "pid=%lu event=%s status=%s profile=4 stars_overrides=%lld cloud_overrides=%lld celestial_overrides=%lld\r\n",
+            "pid=%lu event=%s status=%s profile=5 stars_overrides=%lld cloud_overrides=%lld celestial_overrides=%lld\r\n",
             GetCurrentProcessId(), event, alwaysday::status,
             alwaysday::StarsOverrideCount(), alwaysday::CloudOverrideCount(), alwaysday::CelestialOverrideCount());
         if (length > 0) g_diagnosticWriter.Submit(g_alwaysDayLogPath.c_str(), line, static_cast<size_t>(length));
@@ -1377,13 +1377,13 @@ namespace
                     actual, sizeof(expected), &read) && read == sizeof(expected) &&
                 std::memcmp(actual, expected, sizeof(expected)) == 0;
         };
-        constexpr unsigned char wheelCall[] = { 0xE8, 0x57, 0x47, 0x24, 0x00 };
-        constexpr unsigned char eventCall[] = { 0xE8, 0x90, 0x4C, 0x2D, 0x00 };
-        constexpr unsigned char wheelDelta[] = { 0x8B, 0x9D, 0x20, 0x01, 0x00, 0x00,
+        constexpr unsigned char wheelCall[] = { 0xE8, 0x45, 0x50, 0x2A, 0x00 };
+        constexpr unsigned char eventCall[] = { 0xE8, 0xAC, 0xAD, 0x39, 0x00 };
+        constexpr unsigned char wheelDelta[] = { 0x8B, 0x9D, 0x10, 0x01, 0x00, 0x00,
             0x41, 0x2B, 0x5F, 0x40, 0x66, 0x85, 0xDB };
-        if (!matchesCode(0x2D1560, kNativeMouseEntries[0]) || !matchesCode(0x361AD0, kNativeMouseEntries[1]) ||
-            !matchesCode(0x8CE04, wheelCall) || !matchesCode(0x8CE3B, eventCall) ||
-            !matchesCode(0x8CD5F, wheelDelta)) return false;
+        if (!matchesCode(0x331790, kNativeMouseEntries[0]) || !matchesCode(0x427530, kNativeMouseEntries[1]) ||
+            !matchesCode(0x8C746, wheelCall) || !matchesCode(0x8C77F, eventCall) ||
+            !matchesCode(0x8C6D0, wheelDelta)) return false;
         if (!screens::Initialize(g_gameModuleBase, true))
         {
             LogZoomStatus("screen-profile-rejected");
@@ -1949,7 +1949,7 @@ namespace
     {
         const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
         InterlockedIncrement(&g_nativeMouseCallbacks);
-        if (caller == g_gameModuleBase + 0x8CE09 && ShouldCaptureZoomWheel())
+        if (caller == g_gameModuleBase + 0x8C74B && ShouldCaptureZoomWheel())
         {
             static volatile LONG logged = 0;
             if (InterlockedCompareExchange(&logged, 1, 0) == 0)
@@ -1967,7 +1967,7 @@ namespace
     {
         const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
         InterlockedIncrement(&g_nativeMouseCallbacks);
-        if (caller == g_gameModuleBase + 0x8CE40 && static_cast<unsigned char>(button) == 4 &&
+        if (caller == g_gameModuleBase + 0x8C784 && static_cast<unsigned char>(button) == 4 &&
             ShouldCaptureZoomWheel())
         {
             static volatile LONG logged = 0;
@@ -2096,9 +2096,9 @@ namespace
             unsigned int index;
         };
         Hook hooks[] = {
-            { 0x2D1560, reinterpret_cast<void*>(&FilteredNativeMouseWheel),
+            { 0x331790, reinterpret_cast<void*>(&FilteredNativeMouseWheel),
                 reinterpret_cast<void**>(&g_originalNativeMouseWheel), &g_nativeMouseWheelTarget, 0 },
-            { 0x361AD0, reinterpret_cast<void*>(&FilteredNativeMouseEvent),
+            { 0x427530, reinterpret_cast<void*>(&FilteredNativeMouseEvent),
                 reinterpret_cast<void**>(&g_originalNativeMouseEvent), &g_nativeMouseEventTarget, 1 }
         };
         for (const Hook& hook : hooks)

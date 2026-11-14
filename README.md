@@ -14,14 +14,20 @@ Use this software at your own risk. It is provided "as is", without warranties o
 - **Auditable source:** Built from source; MinHook source and license included.
 - **Verified changes:** Exact game build and targets checked before modification.
 
+## Current build status
+
+The launcher supports **Bedrock 1.26.6301.0 x64**. All native feature profiles have been ported and checked against the installed game image.
+
+A local-world check confirmed startup, Zoom activation/restoration, FPS sampling, Nametag in both third-person views with hidden HUD, F7 toggling, first-person suppression, F6 switching between native nighttime and daytime sky, and F10 restoration/unload. The user also visually confirmed Full Bright (F8). FPS overlay appearance, wheel behavior, camera smoothness, geometry occlusion, and the sun's exact overhead position still need dedicated visual checks.
+
 ## Features
 
 | Feature | Key (default) | Details and verification |
 | --- | --- | --- |
 | Zoom | T (hold), mouse wheel | Smooth local FOV transition; defaults to 25° in first person and 29° in third person, with a 75 ms transition. `MouseSensitivity` is a 0-100 multiplier on optically compensated sensitivity at maximum Zoom; 100 approximately preserves screen-space movement as FOV narrows, and lower values slow it further. The uniquely verified game option is adjusted with compare-and-swap and restored only while ownership remains unchanged. Cumulative GameInput mouse coordinates pass through unchanged. Activation, option validation, and restoration were checked in a local test world; low-FOV camera movement, wheel behavior, and desktop mouse response still need dedicated in-game checks.
-| Always day | F6 | Keeps the rendered sun at noon and the moon below the horizon, with daytime sky colours. World time keeps progressing normally. The previous implementation failed its Fancy graphics test (issue #22). The updated rotation and camera paths pass automated tests and await an in-game visual retest. |
-| Nametag | F7 | Displays your name in both third-person views, including when F1 hides the HUD. Verified in a local game. |
-| Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. Confirmed working; other rendering modes and interaction with Always day have not been verified. |
+| Always day | F6 | Keeps the rendered sun at noon and the moon below the horizon, with daytime sky colours. World time keeps progressing normally. Day/night toggling was visually checked in a local world; exact celestial position still needs a dedicated check. |
+| Nametag | F7 | Displays your name in both third-person views, including when F1 hides the HUD. Both third-person views, hidden HUD, F7 toggling, and first-person suppression were checked in a local world. |
+| Full Bright | F8 | Temporarily changes parameters of the standard local light texture; it does not change gamma, player state, or saved lighting. The user visually confirmed it works on the supported build. |
 | FPS counter | INI setting | Bottom-left `FPS: 60` display with larger white Minecraft-style text and a black, 65%-opaque rectangular background. Counts game updates over one-second intervals; enabled by default and configurable. In-game appearance still needs verification. |
 
 Always day and Full Bright are enabled automatically after their profiles are verified, and Nametag is enabled when valid camera options are available. Their shortcuts toggle them off and on. Zoom preparation is automatic, but Zoom remains hold-to-use.
@@ -63,7 +69,7 @@ Module shortcuts work only on verified gameplay screens. In chat, menus, and oth
 ## Compatibility
 
 - **Operating system:** Windows, x64.
-- **Verified game build:** `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe`. Other versions are unsupported; the opt-in below permits an experimental launch attempt only.
+- **Verified game build:** `Microsoft.MinecraftUWP_1.26.6301.0_x64__8wekyb3d8bbwe`. Other versions are unsupported; the opt-in below permits an experimental launch attempt only.
 - **Game mode:** Local single-player worlds only. Multiplayer is unsupported, and the add-on cannot reliably detect the current game mode.
 
 The launcher checks the exact game build and rejects unsupported versions by default. Do not assume another game version is compatible.
@@ -128,7 +134,7 @@ GitHub Actions builds the project and runs the automated tests for pull requests
 
 ## Troubleshooting
 
-- **The launcher rejects the game:** Check that the installed package is exactly `Microsoft.MinecraftUWP_1.26.5203.0_x64__8wekyb3d8bbwe`. Other builds are unsupported unless the experimental `[Compatibility] AllowUnsupportedGameVersion=true` setting is enabled.
+- **The launcher rejects the game:** Check that the installed package is exactly `Microsoft.MinecraftUWP_1.26.6301.0_x64__8wekyb3d8bbwe`. Other builds are unsupported unless the experimental `[Compatibility] AllowUnsupportedGameVersion=true` setting is enabled.
 - **A shortcut does not work:** Return to gameplay, release the key, and check [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini) for distinct shortcuts under `[Shortcuts]`. Shortcuts also remain disabled while screen discovery is incomplete or cannot safely identify the active screen; see `screen_profile` and `screen_client` in `zoom-status-<PID>.log`.
 - **A feature behaves differently than expected:** Check its verification status in [Features](#features); some behavior has not yet been tested in-game.
 - **The build fails:** Confirm that the x64 MSVC tools, Windows SDK, and .NET 10 SDK are installed, then review the build output.

@@ -15,14 +15,14 @@ namespace nametag
 {
     // This profile was traced in the loaded, pinned PE image, through the
     // native NameTagRenderObject producer and RenderNametagDescription consumer.
-    constexpr uintptr_t kOwnGateRva = 0x46B3201;
-    constexpr uintptr_t kOwnSkipRva = 0x46B31E0;
-    constexpr uintptr_t kDepthGateRva = 0x1D55D5F;
+    constexpr uintptr_t kOwnGateRva = 0x5397B7C;
+    constexpr uintptr_t kOwnSkipRva = 0x5397B60;
+    constexpr uintptr_t kDepthGateRva = 0x5950BEE;
     constexpr uintptr_t kPerspectiveOffset = 0x28;
-    constexpr uintptr_t kEnumVtableRva = 0xE778FE0;
+    constexpr uintptr_t kEnumVtableRva = 0xF09F250;
     constexpr size_t kAllocationSize = 8192;
     constexpr size_t kDataOffset = 4096;
-    constexpr unsigned char kOwnOriginal[] = {0x4C, 0x39, 0xE3, 0x74, 0xDA, 0x48, 0x8B, 0x03};
+    constexpr unsigned char kOwnOriginal[] = {0x48, 0x3B, 0x9D, 0xB8, 0, 0, 0, 0x74, 0xDB};
     // Native BaseActorRenderer::prepareText argument 11: use depth-tested
     // materials for BOTH the text and the background. No actor flag is changed.
     constexpr unsigned char kDepthOriginal[] = {0xC6, 0x44, 0x24, 0x50, 0x00};
@@ -50,8 +50,8 @@ namespace nametag
     {
         uintptr_t address = 0;
         size_t size = 0;
-        std::array<unsigned char, 8> original{};
-        std::array<unsigned char, 8> replacement{};
+        std::array<unsigned char, 16> original{};
+        std::array<unsigned char, 16> replacement{};
         bool installed = false;
         DWORD originalProtection = 0;
         bool protectionPending = false;
@@ -144,19 +144,18 @@ namespace nametag
             nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
             nt.OptionalHeader.SizeOfImage != fov::kImageSize) return false;
         imageBase = base;
-        const unsigned char ownContext[] = {0x49, 0x8B, 0x5D, 0x00, 0x4C, 0x39, 0xE3,
-            0x74, 0xDA, 0x48, 0x8B, 0x03, 0x48, 0x8B, 0x80, 0xF8, 0, 0, 0, 0x48, 0x89, 0xD9};
+        const unsigned char ownContext[] = {0x48, 0x8B, 0x1E, 0x48, 0x3B, 0x9D, 0xB8, 0x00, 0x00, 0x00, 0x74, 0xDB, 0x48, 0x8B, 0x03, 0x48, 0x8B, 0x80, 0xF8, 0x00, 0x00, 0x00, 0x48, 0x89, 0xD9};
         const unsigned char depthContext[] = {0xC6, 0x44, 0x24, 0x60, 0,
             0xC6, 0x44, 0x24, 0x58, 0, 0xC6, 0x44, 0x24, 0x50, 0,
             0xC7, 0x44, 0x24, 0x38, 0, 0, 0x80, 0x3F};
         const unsigned char materialSelector[] = {0x80, 0xBD, 0x60, 0x01, 0, 0, 0,
             0x48, 0x0F, 0x45, 0xC1, 0x49, 0x0F, 0x45, 0xD0, 0x48, 0x01, 0xD8, 0x48, 0x01, 0xDA};
-        return IsImageCode(base + kOwnGateRva - 4, sizeof(ownContext)) &&
+        return IsImageCode(base + kOwnGateRva - 3, sizeof(ownContext)) &&
             IsImageCode(base + kDepthGateRva - 10, sizeof(depthContext)) &&
-            IsImageCode(base + 0x1ED337B, sizeof(materialSelector)) &&
-            Matches(base + kOwnGateRva - 4, ownContext, sizeof(ownContext)) &&
+            IsImageCode(base + 0x57E3DF9, sizeof(materialSelector)) &&
+            Matches(base + kOwnGateRva - 3, ownContext, sizeof(ownContext)) &&
             Matches(base + kDepthGateRva - 10, depthContext, sizeof(depthContext)) &&
-            Matches(base + 0x1ED337B, materialSelector, sizeof(materialSelector)) && ValidateHudProfile(base);
+            Matches(base + 0x57E3DF9, materialSelector, sizeof(materialSelector)) && ValidateHudProfile(base);
     }
 
     inline int Perspective(uintptr_t options)
@@ -289,7 +288,7 @@ namespace nametag
         }
         void Save(bool comparison)
         {
-            if (comparison) Emit({0x4C, 0x39, 0xE3}); // cmp rbx,r12: original flags
+            if (comparison) Emit({0x48, 0x3B, 0x9D, 0xB8, 0, 0, 0}); // native local-player comparison
             Emit({0x9C, 0x50, 0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53});
             Emit({0x48, 0x81, 0xEC, 0x80, 0, 0, 0}); // 32-byte shadow space + XMM0..5
             for (unsigned char reg = 0; reg < 6; ++reg)
@@ -317,16 +316,15 @@ namespace nametag
         own.Rip({0x48, 0x8B, 0x05}, reinterpret_cast<uintptr_t>(&state->ownCallback));
         own.Emit({0x48, 0x85, 0xC0});
         const size_t fallback = own.Branch(0x84);
-        own.Emit({0x48, 0x89, 0xD9, 0x4C, 0x89, 0xE2, 0xFF, 0xD0, 0x84, 0xC0});
+        own.Emit({0x48, 0x89, 0xD9, 0x48, 0x8B, 0x95, 0xB8, 0, 0, 0, 0xFF, 0xD0, 0x84, 0xC0});
         const size_t skipCallback = own.Branch(0x84);
         const size_t allowedCallback = own.Branch(0x85);
         own.Bind(fallback);
-        own.Emit({0x4C, 0x39, 0xE3});
+        own.Emit({0x48, 0x3B, 0x9D, 0xB8, 0, 0, 0});
         const size_t skipNative = own.Branch(0x84);
         own.Bind(allowedCallback);
         own.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
         own.Restore();
-        own.Emit({0x48, 0x8B, 0x03}); // displaced mov rax,[rbx]
         own.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->ownContinue));
         own.Bind(skipCallback); own.Bind(skipNative);
         own.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
@@ -357,8 +355,8 @@ namespace nametag
         hud.Rip({0x48, 0x8B, 0x05}, reinterpret_cast<uintptr_t>(&state->hudCallback));
         hud.Emit({0x48, 0x85, 0xC0});
         const size_t nativeHud = hud.Branch(0x84);
-        // Original AL is at saved RAX (+0xB0); R12 is the native local player.
-        hud.Emit({0x4C, 0x89, 0xE1, 0x0F, 0xB6, 0x94, 0x24, 0xB0, 0, 0, 0, 0xFF, 0xD0});
+        // Original AL is at saved RAX (+0xB0); the local player is at RBP+0xB8.
+        hud.Emit({0x48, 0x8B, 0x8D, 0xB8, 0, 0, 0, 0x0F, 0xB6, 0x94, 0x24, 0xB0, 0, 0, 0, 0xFF, 0xD0});
         hud.Emit({0x88, 0x84, 0x24, 0xA8, 0, 0, 0}); // replace saved CL only
         hud.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
         hud.Restore();
@@ -368,7 +366,7 @@ namespace nametag
         hud.Bind(nativeHud);
         hud.Rip({0xF0, 0xFF, 0x0D}, activeAddress);
         hud.Restore();
-        hud.Emit({0x4D, 0x85, 0xE4, 0x0F, 0x94, 0xC1, 0x08, 0xC1});
+        for (unsigned char byte : hudprofile::kGateOriginal) hud.Emit({byte});
         hud.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->hudContinue));
         hud.Finish(memory + 1024);
 
@@ -414,7 +412,7 @@ namespace nametag
         mask.Restore();
         mask.Emit({0x34, 0x01});
         mask.Bind(loadNames);
-        mask.Emit({0x8B, 0x8D, 0xB4, 0x39, 0, 0}); // preserve native names preference
+        mask.Emit({0x8B, 0x95, 0x1C, 0x2F, 0, 0}); // preserve native names preference
         mask.Rip({0xFF, 0x25}, reinterpret_cast<uintptr_t>(&state->namesMaskContinue));
         mask.Finish(memory + 2048);
         if (own.Size() > 512 || depth.Size() > 512 || hud.Size() > 512 || loop.Size() > 512 || mask.Size() > 512)
@@ -534,7 +532,7 @@ namespace nametag
     inline bool Jump(Patch& patch, uintptr_t address, const unsigned char* original, size_t size, uintptr_t destination)
     {
         const int64_t delta = static_cast<int64_t>(destination) - static_cast<int64_t>(address + 5);
-        if (delta < INT32_MIN || delta > INT32_MAX || size < 5 || size > 8) return false;
+        if (delta < INT32_MIN || delta > INT32_MAX || size < 5 || size > patch.original.size()) return false;
         patch.address = address; patch.size = size;
         std::memcpy(patch.original.data(), original, size);
         patch.replacement.fill(0x90); patch.replacement[0] = 0xE9;

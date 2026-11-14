@@ -84,6 +84,9 @@ def inspect(path):
     from InspectAlwaysDay import profile
     function, expected, callers, extra, _ = profile()
     check("Always day function", function, expected)
+    check("Always day cycle constant", 0xF1527AC, struct.pack("<f", 24000.0))
+    check("Always day phase constant", 0xF1527B0, struct.pack("<f", -0.25))
+    check("Always day cloud uniform name", 0xF563CB0, b"CloudColor\0")
     for context, ret, expected in callers:
         check("Always day caller", context, expected)
         checks.append({"name": "Always day return boundary", "rva": hex(ret),

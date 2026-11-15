@@ -1616,7 +1616,6 @@ namespace
         g_zoom.displayedValue = values[2];
         g_zoom.transitionStartValue = values[2];
         g_zoom.transitionTargetValue = zoomFov;
-        g_zoom.transitionStartedAt = ZoomTimeMs();
         g_zoom.transitionActive = true;
         g_zoom.restoring = false;
         g_zoom.active = true;
@@ -1668,6 +1667,10 @@ namespace
             g_zoomRestorePending = false;
             InterlockedExchange(&g_pendingZoomWheel, 0);
             g_zoomWheelRemainder = 0;
+            // Start the configured animation only after the guarded setup writes
+            // have succeeded. Time spent validating the target must not consume
+            // the transition before the worker can advance it.
+            g_zoom.transitionStartedAt = ZoomTimeMs();
             LogZoomStatus("zoom-started");
             SetOverlayMessage(sensitivityApplied ?
                 L"Zooming; mouse sensitivity adjusted, release Zoom key to restore" :
@@ -1691,6 +1694,8 @@ namespace
         }
     }
 
+    void BeginZoomRestoreTransition();
+
     void ApplyZoom(HWND gameWindow)
     {
         if (!g_supportedBuild)
@@ -1704,6 +1709,15 @@ namespace
         else
         {
             SetOverlayMessage(L"Verifying FOV automatically; Zoom waits for a unique target", RGB(255, 220, 120));
+        }
+
+        // Applying Zoom can take long enough for a quick key tap to finish while
+        // the worker is validating the FOV target. Reconcile against the live
+        // hook state before returning so a release cannot leave Zoom active.
+        if (g_zoom.active && !IsZoomKeyDown() && !g_zoom.restoring)
+        {
+            BeginZoomRestoreTransition();
+            SetOverlayMessage(L"Restoring original FOV", RGB(135, 255, 170));
         }
     }
 

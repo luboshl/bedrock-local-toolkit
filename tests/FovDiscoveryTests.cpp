@@ -852,6 +852,20 @@ namespace
         void Value(float value) { std::memcpy(memory + 1048, &value, 4); }
     };
 
+    void TestSensitivityScanBatchBoundaries()
+    {
+        Fixture fixture;
+        fixture.AddSensitivity();
+        uintptr_t owner = 0, address = 0, slot = 0;
+        float value = 0.0f;
+        Check(ReadVerifiedMouseSensitivity(fixture.target.options, owner, address, slot, value) &&
+            slot == fixture.sensitivityOptionsSlotAddress && value == 0.50f,
+            "batched sensitivity scan finds a unique named option");
+        fixture.Pointer(0x400, fixture.sensitivityValueAddress - fov::kPatternOffset - 2 * sizeof(float));
+        Check(!ReadVerifiedMouseSensitivity(fixture.target.options, owner, address, slot, value),
+            "batched sensitivity scan rejects duplicate bindings in different batches");
+    }
+
     void TestZoomSensitivityRestorationAfterFovReplacement()
     {
         Fixture fixture;
@@ -1182,6 +1196,7 @@ int main()
         TestZoomTransitionInterpolation();
         TestZoomMouseSensitivityInterpolation();
         TestZoomSensitivityRestoration();
+        TestSensitivityScanBatchBoundaries();
         TestZoomSensitivityRestorationAfterFovReplacement();
         TestZoomSensitivityOwnerReplacementPreserved();
         TestZoomSensitivityOptionsBindingReplacementStopsUpdates();

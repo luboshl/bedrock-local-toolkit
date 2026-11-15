@@ -558,11 +558,25 @@ namespace
         uintptr_t foundAddress = 0;
         uintptr_t foundSlotAddress = 0;
         float foundValue = 0.0f;
+        constexpr size_t kSlotBatchSize = 64;
+        uintptr_t slots[kSlotBatchSize]{};
         for (size_t offset = 0; offset + sizeof(uintptr_t) <= fov::kOptionsSearchBytes;
             offset += sizeof(uintptr_t))
         {
-            uintptr_t wrapper = 0;
-            if (!ReadPrivateMemory(options + offset, &wrapper, sizeof(wrapper))) return false;
+            const size_t index = offset / sizeof(uintptr_t);
+            if (index % kSlotBatchSize == 0)
+            {
+                const size_t remaining = (fov::kOptionsSearchBytes - offset) / sizeof(uintptr_t);
+                const size_t count = (std::min)(remaining, kSlotBatchSize);
+                if (!ReadPrivateMemory(options + offset, slots, count * sizeof(uintptr_t)))
+                {
+                    // A batch may cross memory regions even when each slot is readable.
+                    for (size_t i = 0; i < count; ++i)
+                        if (!ReadPrivateMemory(options + offset + i * sizeof(uintptr_t), &slots[i], sizeof(uintptr_t)))
+                            return false;
+                }
+            }
+            const uintptr_t wrapper = slots[index % kSlotBatchSize];
             if (wrapper == 0 || (wrapper & 7) != 0 ||
                 wrapper > (std::numeric_limits<uintptr_t>::max)() - fov::kPatternOffset) continue;
 
@@ -1616,7 +1630,6 @@ namespace
         g_zoom.displayedValue = values[2];
         g_zoom.transitionStartValue = values[2];
         g_zoom.transitionTargetValue = zoomFov;
-        g_zoom.transitionStartedAt = ZoomTimeMs();
         g_zoom.transitionActive = true;
         g_zoom.restoring = false;
         g_zoom.active = true;
@@ -1668,6 +1681,10 @@ namespace
             g_zoomRestorePending = false;
             InterlockedExchange(&g_pendingZoomWheel, 0);
             g_zoomWheelRemainder = 0;
+            // Start the configured animation only after the guarded setup writes
+            // have succeeded. Time spent validating the target must not consume
+            // the transition before the worker can advance it.
+            g_zoom.transitionStartedAt = ZoomTimeMs();
             LogZoomStatus("zoom-started");
             SetOverlayMessage(sensitivityApplied ?
                 L"Zooming; mouse sensitivity adjusted, release Zoom key to restore" :
@@ -1691,6 +1708,8 @@ namespace
         }
     }
 
+    void BeginZoomRestoreTransition();
+
     void ApplyZoom(HWND gameWindow)
     {
         if (!g_supportedBuild)
@@ -1704,6 +1723,18 @@ namespace
         else
         {
             SetOverlayMessage(L"Verifying FOV automatically; Zoom waits for a unique target", RGB(255, 220, 120));
+        }
+
+        // Low-level hooks are delivered to this thread as sent messages. Process
+        // those callbacks without removing or dispatching queued window messages.
+        MSG pendingMessage{};
+        PeekMessageW(&pendingMessage, nullptr, 0, 0, PM_NOREMOVE);
+
+        // Reconcile releases delivered while target validation was running.
+        if (g_zoom.active && !g_zoomRestorePending && !IsZoomKeyDown() && !g_zoom.restoring)
+        {
+            BeginZoomRestoreTransition();
+            SetOverlayMessage(L"Restoring original FOV", RGB(135, 255, 170));
         }
     }
 

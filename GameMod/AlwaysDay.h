@@ -113,10 +113,10 @@ namespace alwaysday
             if (!IsCode(base, std::get<0>(context), std::get<2>(context)) ||
                 !Matches(base + std::get<0>(context), std::get<1>(context), std::get<2>(context))) return false;
         const unsigned char cloudName[] = "CloudColor";
-        if (!Matches(base + 0xF563CB0, cloudName, sizeof(cloudName))) return false;
+        if (!Matches(base + 0xF564D36, cloudName, sizeof(cloudName))) return false;
         float cycle = 0, phase = 0;
-        if (!nametag::Read(base + 0xF1527AC, &cycle, sizeof(cycle)) || cycle != 24000.0f ||
-            !nametag::Read(base + 0xF1527B0, &phase, sizeof(phase)) || phase != -0.25f) return false;
+        if (!nametag::Read(base + 0xF1537AC, &cycle, sizeof(cycle)) || cycle != 24000.0f ||
+            !nametag::Read(base + 0xF1537B0, &phase, sizeof(phase)) || phase != -0.25f) return false;
         for (const auto& caller : kRenderCallers)
             if (!IsCode(base, caller.contextRva, caller.size) ||
                 !Matches(base + caller.contextRva, caller.bytes.data(), caller.size)) return false;

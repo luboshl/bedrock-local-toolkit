@@ -15,11 +15,11 @@ namespace nametag
 {
     // This profile was traced in the loaded, pinned PE image, through the
     // native NameTagRenderObject producer and RenderNametagDescription consumer.
-    constexpr uintptr_t kOwnGateRva = 0x5397B7C;
-    constexpr uintptr_t kOwnSkipRva = 0x5397B60;
-    constexpr uintptr_t kDepthGateRva = 0x5950BEE;
+    constexpr uintptr_t kOwnGateRva = 0x5397F2C;
+    constexpr uintptr_t kOwnSkipRva = 0x5397F10;
+    constexpr uintptr_t kDepthGateRva = 0x5950F9E;
     constexpr uintptr_t kPerspectiveOffset = 0x28;
-    constexpr uintptr_t kEnumVtableRva = 0xF09F250;
+    constexpr uintptr_t kEnumVtableRva = 0xF0A0250;
     constexpr size_t kAllocationSize = 8192;
     constexpr size_t kDataOffset = 4096;
     constexpr unsigned char kOwnOriginal[] = {0x48, 0x3B, 0x9D, 0xB8, 0, 0, 0, 0x74, 0xDB};
@@ -152,10 +152,10 @@ namespace nametag
             0x48, 0x0F, 0x45, 0xC1, 0x49, 0x0F, 0x45, 0xD0, 0x48, 0x01, 0xD8, 0x48, 0x01, 0xDA};
         return IsImageCode(base + kOwnGateRva - 3, sizeof(ownContext)) &&
             IsImageCode(base + kDepthGateRva - 10, sizeof(depthContext)) &&
-            IsImageCode(base + 0x57E3DF9, sizeof(materialSelector)) &&
+            IsImageCode(base + 0x57E41A9, sizeof(materialSelector)) &&
             Matches(base + kOwnGateRva - 3, ownContext, sizeof(ownContext)) &&
             Matches(base + kDepthGateRva - 10, depthContext, sizeof(depthContext)) &&
-            Matches(base + 0x57E3DF9, materialSelector, sizeof(materialSelector)) && ValidateHudProfile(base);
+            Matches(base + 0x57E41A9, materialSelector, sizeof(materialSelector)) && ValidateHudProfile(base);
     }
 
     inline int Perspective(uintptr_t options)

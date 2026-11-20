@@ -42,15 +42,15 @@ void CheckNativeNoon(const alwaysday::BridgeData& templateState) {
             const uintptr_t target = kFunctionRva + i + 8 + relative;
             float value = 0;
             switch (target) {
-            case 0xF1527AC: value = 24000.0f; break;
-            case 0xF1527B0: value = -0.25f; break;
-            case 0xEEC8060: value = 1.0f; break;
-            case 0xEF1D470: value = -1.0f; break;
-            case 0xEF3F024: value = 3.1415927410125732f; break;
-            case 0xEFD3338: value = 10430.3779296875f; break;
-            case 0xEFD333C: value = 16384.0f; break;
-            case 0xEF3F044: value = -0.5f; break;
-            case 0xEF3F020: value = 3.0f; break;
+            case 0xF1537AC: value = 24000.0f; break;
+            case 0xF1537B0: value = -0.25f; break;
+            case 0xEEC9060: value = 1.0f; break;
+            case 0xEF1E470: value = -1.0f; break;
+            case 0xEF40024: value = 3.1415927410125732f; break;
+            case 0xEFD4338: value = 10430.3779296875f; break;
+            case 0xEFD433C: value = 16384.0f; break;
+            case 0xEF40044: value = -0.5f; break;
+            case 0xEF40020: value = 3.0f; break;
             default: Check(false, "unrecognized native constant");
             }
             const size_t offset = 1024 + i * 4;

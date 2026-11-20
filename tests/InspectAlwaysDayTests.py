@@ -18,9 +18,9 @@ class InspectionTests(unittest.TestCase):
             self.write(context, data)
         for _, rva, data in extra:
             self.write(rva, data)
-        self.write(0xf1527ac, struct.pack("<f", 24000))
-        self.write(0xf1527b0, struct.pack("<f", -0.25))
-        self.write(0xf563cb0, b"CloudColor\0")
+        self.write(0xf1537ac, struct.pack("<f", 24000))
+        self.write(0xf1537b0, struct.pack("<f", -0.25))
+        self.write(0xf564d36, b"CloudColor\0")
 
     def write(self, address, data):
         self.memory.update((address + i, value) for i, value in enumerate(data))
@@ -30,13 +30,13 @@ class InspectionTests(unittest.TestCase):
 
     def test_original_and_changed_context(self):
         self.assertTrue(inspector.inspect_read(self.read, 0)["unpatchedProfileMatches"])
-        self.write(0x212e1f0, b"\xCC")
+        self.write(0x212e1e0, b"\xCC")
         self.assertFalse(inspector.inspect_read(self.read, 0)["unpatchedProfileMatches"])
 
     def test_installed_layout_and_partial_context_overlap(self):
         bridge = 0x10000000
-        sites = [(self.function + 3, 7, 0), (0x539331b, 8, 1536),
-                 (0x67376a3, 7, 2048), (0x53933c2, 8, 3072)]
+        sites = [(self.function + 3, 7, 0), (0x53936cb, 8, 1536),
+                 (0x6737d33, 7, 2048), (0x5393772, 8, 3072)]
         for address, size, offset in sites:
             self.write(address, b"\xE9" + struct.pack("<i", bridge + offset - address - 5) + b"\x90" * (size - 5))
         n = len(self.callers)
@@ -44,11 +44,11 @@ class InspectionTests(unittest.TestCase):
         struct.pack_into("<IIQ", state, 0, 1, 5, self.function + 10)
         struct.pack_into(f"<{n}Q", state, 16, *(ret for _, ret, _ in self.callers))
         struct.pack_into(f"<{n}Q", state, 16 + 8 * n, *range(n))
-        struct.pack_into("<5Q", state, 16 + 16 * n, self.light_parent, 0x5393323, 0x67376aa, 7, 8)
-        struct.pack_into("<7Q", state, 56 + 16 * n, 0x5393418, 0x53939f2, 0x5394677,
-                         0x5394908, 0x53946b2, 0x53933ca, 9)
-        struct.pack_into("<6Q", state, 112 + 16 * n, 0x5376b66, 0x5aed112,
-                         0x53742d4, 0x53759c2, 0x5374252, 0x5374271)
+        struct.pack_into("<5Q", state, 16 + 16 * n, self.light_parent, 0x53936d3, 0x6737d3a, 7, 8)
+        struct.pack_into("<7Q", state, 56 + 16 * n, 0x53937c8, 0x5393da2, 0x5394a27,
+                         0x5394cb8, 0x5394a62, 0x539377a, 9)
+        struct.pack_into("<6Q", state, 112 + 16 * n, 0x5376f16, 0x5aed4c2,
+                         0x5374684, 0x5375d72, 0x5374602, 0x5374621)
         self.write(bridge + 4096, state)
         result = inspector.inspect_read(self.read, 0)
         self.assertTrue(all(item["matches"] for item in result["rendererContexts"] + result["brightnessContexts"]))

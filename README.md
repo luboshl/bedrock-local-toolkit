@@ -16,7 +16,7 @@ Use this software at your own risk. It is provided "as is", without warranties o
 
 ## Current build status
 
-The launcher supports **Bedrock 1.26.6301.0 x64**. All native feature profiles have been ported and checked against the installed game image.
+The launcher supports **Bedrock v26.65 (package 1.26.6501.0 x64)**. All native feature profiles have been ported and checked against the installed game image.
 
 A local-world check confirmed startup, Zoom activation/restoration, FPS sampling, Nametag in both third-person views with hidden HUD, F7 toggling, first-person suppression, F6 switching between native nighttime and daytime sky, and F10 restoration/unload. The user also visually confirmed Full Bright (F8). FPS overlay appearance, wheel behavior, camera smoothness, geometry occlusion, and the sun's exact overhead position still need dedicated visual checks.
 
@@ -69,7 +69,7 @@ Module shortcuts work only on verified gameplay screens. In chat, menus, and oth
 ## Compatibility
 
 - **Operating system:** Windows, x64.
-- **Verified game build:** `Microsoft.MinecraftUWP_1.26.6301.0_x64__8wekyb3d8bbwe`. Other versions are unsupported; the opt-in below permits an experimental launch attempt only.
+- **Verified game build:** `Microsoft.MinecraftUWP_1.26.6501.0_x64__8wekyb3d8bbwe`. Other versions are unsupported; the opt-in below permits an experimental launch attempt only.
 - **Game mode:** Local single-player worlds only. Multiplayer is unsupported, and the add-on cannot reliably detect the current game mode.
 
 The launcher checks the exact game build and rejects unsupported versions by default. Do not assume another game version is compatible.
@@ -134,7 +134,7 @@ GitHub Actions builds the project and runs the automated tests for pull requests
 
 ## Troubleshooting
 
-- **The launcher rejects the game:** Check that the installed package is exactly `Microsoft.MinecraftUWP_1.26.6301.0_x64__8wekyb3d8bbwe`. Other builds are unsupported unless the experimental `[Compatibility] AllowUnsupportedGameVersion=true` setting is enabled.
+- **The launcher rejects the game:** Check that the installed package is exactly `Microsoft.MinecraftUWP_1.26.6501.0_x64__8wekyb3d8bbwe`. Other builds are unsupported unless the experimental `[Compatibility] AllowUnsupportedGameVersion=true` setting is enabled.
 - **A shortcut does not work:** Return to gameplay, release the key, and check [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini) for distinct shortcuts under `[Shortcuts]`. Shortcuts also remain disabled while screen discovery is incomplete or cannot safely identify the active screen; see `screen_profile` and `screen_client` in `zoom-status-<PID>.log`.
 - **A feature behaves differently than expected:** Check its verification status in [Features](#features); some behavior has not yet been tested in-game.
 - **The build fails:** Confirm that the x64 MSVC tools, Windows SDK, and .NET 10 SDK are installed, then review the build output.

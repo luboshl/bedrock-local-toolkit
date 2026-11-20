@@ -1,6 +1,6 @@
 # Build Diagnostics
 
-For the partial **1.26.6301.0** port, run the standard-library static inspector against the installed executable:
+For the **1.26.6501.0** port, run the standard-library static inspector against the installed executable:
 
 ```powershell
 python diagnostics\InspectBuildProfile.py "C:\XboxGames\Minecraft for Windows\Content\Minecraft.Windows.exe"
@@ -10,7 +10,7 @@ It validates the exact PE identity, ported screen/input instructions and vtable 
 
 ## Live and Snapshot Rendering Tools
 
-`InspectNametag.py`, `InspectAlwaysDay.py`, `InspectFullBright.py` and `InspectScreenInput.py` target 1.26.6301.0. Older FOV/probe scripts retain their previous-build profiles and are not the current build validator. Before using any tool with another version, independently verify its profile.
+`InspectNametag.py`, `InspectAlwaysDay.py`, `InspectFullBright.py` and `InspectScreenInput.py` target 1.26.6501.0. Older FOV/probe scripts retain their previous-build profiles and are not the current build validator. Before using any tool with another version, independently verify its profile.
 
 The Python scripts use the standard library. When reading a live process, they verify the supported package identity and open it only for querying and reading memory. They do not inject DLLs or modify game memory. `FovMemoryProbe.ps1` is also read-only, but it can scan a large memory range and saves the resulting snapshot to a local JSON file. PID is a required parameter and must not be copied from an old example.
 

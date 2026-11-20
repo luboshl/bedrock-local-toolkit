@@ -11,7 +11,7 @@ internal static class Program
 {
     private const string ProcessName = "Minecraft.Windows";
     private const string ExpectedPackageFamily = "Microsoft.MinecraftUWP_8wekyb3d8bbwe";
-    private const string ExpectedPackageFullName = "Microsoft.MinecraftUWP_1.26.6301.0_x64__8wekyb3d8bbwe";
+    private const string ExpectedPackageFullName = "Microsoft.MinecraftUWP_1.26.6501.0_x64__8wekyb3d8bbwe";
     private const ushort ImageFileMachineUnknown = 0;
     private const ushort ImageFileMachineAmd64 = 0x8664;
     private const uint ErrorInsufficientBuffer = 122;

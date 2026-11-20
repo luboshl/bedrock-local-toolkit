@@ -1,4 +1,4 @@
-"""Read-only checks of the ported 1.26.6301.0 profiles against an installed PE.
+"""Read-only checks of the ported 1.26.6501.0 profiles against an installed PE.
 
 Usage: python diagnostics/InspectBuildProfile.py "C:/XboxGames/Minecraft for Windows/Content/Minecraft.Windows.exe"
 Uses only the Python standard library. Never opens a process or modifies files.
@@ -21,7 +21,7 @@ def inspect(path):
     machine, count, timestamp = struct.unpack_from("<HHI", data, pe + 4)
     optional = pe + 24
     image_size = struct.unpack_from("<I", data, optional + 56)[0]
-    if (machine, timestamp, image_size) != (0x8664, 0x6AED1906, 0x1383D000):
+    if (machine, timestamp, image_size) != (0x8664, 0x6AFA31EC, 0x1383E000):
         raise ValueError("Unsupported PE identity; no profiles checked")
     if struct.unpack_from("<H", data, optional)[0] != 0x20B:
         raise ValueError("Expected PE32+ image")
@@ -49,6 +49,9 @@ def inspect(path):
         text = (root / "GameMod" / name).read_text()
         constants = {key: int(value, 16) for key, value in re.findall(
             r"constexpr uintptr_t (k\w+) = (0x[0-9A-Fa-f]+);", text)}
+        for key, base, offset in re.findall(
+                r"constexpr uintptr_t (k\w+) = (k\w+) - (\d+);", text):
+            constants[key] = constants[base] - int(offset)
         arrays = {key: bytes(int(value, 16) for value in re.findall(r"0x([0-9A-Fa-f]{2})", body))
                   for key, body in re.findall(
                       r"constexpr (?:unsigned char|std::array<unsigned char, \d+>) (k\w+)(?:\[\])? = \{(.*?)\};",
@@ -84,9 +87,9 @@ def inspect(path):
     from InspectAlwaysDay import profile
     function, expected, callers, extra, _ = profile()
     check("Always day function", function, expected)
-    check("Always day cycle constant", 0xF1527AC, struct.pack("<f", 24000.0))
-    check("Always day phase constant", 0xF1527B0, struct.pack("<f", -0.25))
-    check("Always day cloud uniform name", 0xF563CB0, b"CloudColor\0")
+    check("Always day cycle constant", 0xF1537AC, struct.pack("<f", 24000.0))
+    check("Always day phase constant", 0xF1537B0, struct.pack("<f", -0.25))
+    check("Always day cloud uniform name", 0xF564D36, b"CloudColor\0")
     for context, ret, expected in callers:
         check("Always day caller", context, expected)
         checks.append({"name": "Always day return boundary", "rva": hex(ret),
@@ -107,11 +110,12 @@ def inspect(path):
     for name in ("Getter", "NamesGetter", "SplitNamesGetter"):
         check("Nametag " + name + " binding", constants[f"k{name}SlotRva"],
               struct.pack("<Q", image_base + constants[f"k{name}Rva"]))
-    check("Nametag own gate", 0x5397B7C, bytes.fromhex("48 3b 9d b8 00 00 00 74 db"))
-    check("Nametag depth argument", 0x5950BEE, bytes.fromhex("c6 44 24 50 00"))
-    check("Nametag material selector", 0x57E3DF9,
-          bytes.fromhex("80 bd 60 01 00 00 00 48 0f 45 c1 49 0f 45 d0 48 01 d8 48 01 da"))
-    return {"build": "1.26.6301.0", "checks": checks,
+    constants, arrays = source("NametagProfile.h")
+    for label, key in (("own gate context", "kOwnContext"),
+                       ("depth argument context", "kDepthContext"),
+                       ("material selector", "kMaterialSelector")):
+        check("Nametag " + label, constants[key + "Rva"], arrays[key])
+    return {"build": "1.26.6501.0", "checks": checks,
             "portedProfilesMatch": all(item["matches"] for item in checks),
             "unportedFeatures": [],
             "scope": "Static instructions and bindings; does not establish in-game behavior"}

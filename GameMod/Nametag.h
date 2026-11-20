@@ -10,16 +10,13 @@
 #include <vector>
 #include "FovDiscovery.h"
 #include "NametagHudProfile.h"
+#include "NametagProfile.h"
 
 namespace nametag
 {
-    // This profile was traced in the loaded, pinned PE image, through the
-    // native NameTagRenderObject producer and RenderNametagDescription consumer.
-    constexpr uintptr_t kOwnGateRva = 0x5397B7C;
-    constexpr uintptr_t kOwnSkipRva = 0x5397B60;
-    constexpr uintptr_t kDepthGateRva = 0x5950BEE;
+    constexpr uintptr_t kOwnSkipRva = 0x5397F10;
     constexpr uintptr_t kPerspectiveOffset = 0x28;
-    constexpr uintptr_t kEnumVtableRva = 0xF09F250;
+    constexpr uintptr_t kEnumVtableRva = 0xF0A0250;
     constexpr size_t kAllocationSize = 8192;
     constexpr size_t kDataOffset = 4096;
     constexpr unsigned char kOwnOriginal[] = {0x48, 0x3B, 0x9D, 0xB8, 0, 0, 0, 0x74, 0xDB};
@@ -144,18 +141,10 @@ namespace nametag
             nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
             nt.OptionalHeader.SizeOfImage != fov::kImageSize) return false;
         imageBase = base;
-        const unsigned char ownContext[] = {0x48, 0x8B, 0x1E, 0x48, 0x3B, 0x9D, 0xB8, 0x00, 0x00, 0x00, 0x74, 0xDB, 0x48, 0x8B, 0x03, 0x48, 0x8B, 0x80, 0xF8, 0x00, 0x00, 0x00, 0x48, 0x89, 0xD9};
-        const unsigned char depthContext[] = {0xC6, 0x44, 0x24, 0x60, 0,
-            0xC6, 0x44, 0x24, 0x58, 0, 0xC6, 0x44, 0x24, 0x50, 0,
-            0xC7, 0x44, 0x24, 0x38, 0, 0, 0x80, 0x3F};
-        const unsigned char materialSelector[] = {0x80, 0xBD, 0x60, 0x01, 0, 0, 0,
-            0x48, 0x0F, 0x45, 0xC1, 0x49, 0x0F, 0x45, 0xD0, 0x48, 0x01, 0xD8, 0x48, 0x01, 0xDA};
-        return IsImageCode(base + kOwnGateRva - 3, sizeof(ownContext)) &&
-            IsImageCode(base + kDepthGateRva - 10, sizeof(depthContext)) &&
-            IsImageCode(base + 0x57E3DF9, sizeof(materialSelector)) &&
-            Matches(base + kOwnGateRva - 3, ownContext, sizeof(ownContext)) &&
-            Matches(base + kDepthGateRva - 10, depthContext, sizeof(depthContext)) &&
-            Matches(base + 0x57E3DF9, materialSelector, sizeof(materialSelector)) && ValidateHudProfile(base);
+        return MatchesCode(base + kOwnContextRva, kOwnContext) &&
+            MatchesCode(base + kDepthContextRva, kDepthContext) &&
+            MatchesCode(base + kMaterialSelectorRva, kMaterialSelector) &&
+            ValidateHudProfile(base);
     }
 
     inline int Perspective(uintptr_t options)

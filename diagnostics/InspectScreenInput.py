@@ -12,7 +12,7 @@ from pathlib import Path
 def inspect_snapshot(directory):
     root = Path(directory)
     metadata = json.loads((root / "image.json").read_text())
-    if metadata.get("timestamp") != "0x6aed1906" or metadata.get("imageSize") != "0x1383d000":
+    if metadata.get("timestamp") != "0x6afa31ec" or metadata.get("imageSize") != "0x1383e000":
         raise RuntimeError("Unsupported snapshot identity")
     base = int(metadata["moduleBase"], 16)
     sections = [(base + rva, size, (root / f"{name[1:]}.bin").read_bytes())

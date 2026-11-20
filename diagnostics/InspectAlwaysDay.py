@@ -72,9 +72,9 @@ def inspect_read(read, base):
                  "matches": context_matches(context, data)} for context, ret, data in callers]
     brightness = [{"name": name, "rva": hex(rva), "matches": context_matches(rva, data)}
                   for name, rva, data in extra]
-    constants = (struct.unpack("<f", read(base + 0xf1527ac, 4))[0] == 24000.0 and
-                 struct.unpack("<f", read(base + 0xf1527b0, 4))[0] == -0.25)
-    cloud_name = read(base + 0xf563cb0, 11) == b"CloudColor\0"
+    constants = (struct.unpack("<f", read(base + 0xf1537ac, 4))[0] == 24000.0 and
+                 struct.unpack("<f", read(base + 0xf1537b0, 4))[0] == -0.25)
+    cloud_name = read(base + 0xf564d36, 11) == b"CloudColor\0"
     result = {"functionRva": hex(function), "patchRva": hex(function + 3),
               "functionState": "original" if original else "jump" if patched and remaining else "unexpected",
               "nativeCalculationMatches": remaining, "constantsMatch": constants,
@@ -127,7 +127,7 @@ def inspect_read(read, base):
 def inspect_snapshot(directory):
     root = Path(directory)
     metadata = json.loads((root / "image.json").read_text())
-    if metadata.get("timestamp") != "0x6aed1906" or metadata.get("imageSize") != "0x1383d000":
+    if metadata.get("timestamp") != "0x6afa31ec" or metadata.get("imageSize") != "0x1383e000":
         raise RuntimeError("Unsupported snapshot identity")
     sections = [(rva, size, (root / (name.lstrip(".") + ".bin")).read_bytes())
                 for name, rva, size in metadata["sections"] if name in (".text", ".rdata")]

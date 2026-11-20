@@ -15,9 +15,9 @@ import json
 import struct
 from pathlib import Path
 
-PACKAGE = "Microsoft.MinecraftUWP_1.26.6301.0_x64__8wekyb3d8bbwe"
-IMAGE_SIZE = 0x1383d000
-TIMESTAMP = 0x6aed1906
+PACKAGE = "Microsoft.MinecraftUWP_1.26.6501.0_x64__8wekyb3d8bbwe"
+IMAGE_SIZE = 0x1383e000
+TIMESTAMP = 0x6afa31ec
 
 
 def inspect(args):
@@ -114,11 +114,11 @@ def inspect(args):
                 value["state"] = "unexpected"
             return value
 
-        own = site(0x5397b7c, bytes.fromhex("48 3b 9d b8 00 00 00 74 db"))
-        depth = site(0x5950bee, bytes.fromhex("c6 44 24 50 00"))
-        hud = site(0x5397aee, bytes.fromhex("48 83 bd b8 00 00 00 00 0f 94 c1 08 c1"))
-        loop_exit = site(0x5397b73, bytes.fromhex("0f 84 1d 09 00 00"))
-        names_mask = site(0x5394a16, bytes.fromhex("34 01 8b 95 1c 2f 00 00"))
+        own = site(0x5397f2c, bytes.fromhex("48 3b 9d b8 00 00 00 74 db"))
+        depth = site(0x5950f9e, bytes.fromhex("c6 44 24 50 00"))
+        hud = site(0x5397e9e, bytes.fromhex("48 83 bd b8 00 00 00 00 0f 94 c1 08 c1"))
+        loop_exit = site(0x5397f23, bytes.fromhex("0f 84 1d 09 00 00"))
+        names_mask = site(0x5394dc6, bytes.fromhex("34 01 8b 95 1c 2f 00 00"))
         result = {"pid": args.pid, "package": package.value, "moduleBase": hex(base),
                   "timestamp": hex(timestamp), "imageSize": hex(image_size),
                   "sites": {"ownPlayer": own, "depthMaterialArgument": depth,
@@ -131,9 +131,9 @@ def inspect(args):
                 result["bridge"] = {
                     "address": hex(bridge), "activeCallbacks": active,
                     "ownCallback": hex(own_cb), "depthCallback": hex(depth_cb),
-                    "destinationsVerified": (continuation == base+0x5397b85 and
-                                             skip == base+0x5397b60 and
-                                             depth_continuation == base+0x5950bf3)}
+                    "destinationsVerified": (continuation == base+0x5397f35 and
+                                             skip == base+0x5397f10 and
+                                             depth_continuation == base+0x5950fa3)}
                 if hud["state"] == loop_exit["state"] == "jump":
                     hud_cb, loop_cb, hud_continue, loop_continue, other_labels, cleanup = struct.unpack(
                         "<6Q", read(bridge+4096+48, 48))
@@ -142,13 +142,13 @@ def inspect(args):
                     result["bridge"]["hudDestinationsVerified"] = (
                         int(hud["destination"], 16) == bridge+1024 and
                         int(loop_exit["destination"], 16) == bridge+1536 and
-                        hud_continue == base+0x5397afb and loop_continue == base+0x5397b79 and
-                        other_labels == base+0x5398496 and cleanup == base+0x539885c)
+                        hud_continue == base+0x5397eab and loop_continue == base+0x5397f29 and
+                        other_labels == base+0x5398846 and cleanup == base+0x5398c0c)
                     if names_mask["state"] == "jump":
                         mask_cb, mask_continue = struct.unpack("<2Q", read(bridge+4096+96, 16))
                         result["bridge"]["namesMaskCallback"] = hex(mask_cb)
                         result["bridge"]["namesMaskDestinationVerified"] = (
-                            int(names_mask["destination"], 16) == bridge+2048 and mask_continue == base+0x5394a1e)
+                            int(names_mask["destination"], 16) == bridge+2048 and mask_continue == base+0x5394dce)
         if args.options:
             options = args.options
             option = struct.unpack("<Q", read(options+0x28, 8))[0]
@@ -156,8 +156,8 @@ def inspect(args):
             pointer, _, key_length, capacity = struct.unpack("<4Q", read(owner+0x188, 32))
             values = struct.unpack("<4i", read(option+16, 16))
             name = read(pointer, 17) if key_length == 16 and 16 <= capacity <= 4096 else b""
-            verified = (struct.unpack("<Q", read(options, 8))[0] == base+0xf277f10 and
-                        vtable == base+0xf09f250 and name == b"game_thirdperson"+bytes([0]) and
+            verified = (struct.unpack("<Q", read(options, 8))[0] == base+0xf278f10 and
+                        vtable == base+0xf0a0250 and name == b"game_thirdperson"+bytes([0]) and
                         values[0:2] == (2, 0) and 0 <= values[2] <= 2 and 0 <= values[3] <= 2)
             result["camera"] = {"options": hex(options), "verified": verified,
                                 "perspective": values[2] if verified else None}

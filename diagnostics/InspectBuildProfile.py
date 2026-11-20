@@ -49,6 +49,9 @@ def inspect(path):
         text = (root / "GameMod" / name).read_text()
         constants = {key: int(value, 16) for key, value in re.findall(
             r"constexpr uintptr_t (k\w+) = (0x[0-9A-Fa-f]+);", text)}
+        for key, base, offset in re.findall(
+                r"constexpr uintptr_t (k\w+) = (k\w+) - (\d+);", text):
+            constants[key] = constants[base] - int(offset)
         arrays = {key: bytes(int(value, 16) for value in re.findall(r"0x([0-9A-Fa-f]{2})", body))
                   for key, body in re.findall(
                       r"constexpr (?:unsigned char|std::array<unsigned char, \d+>) (k\w+)(?:\[\])? = \{(.*?)\};",
@@ -107,10 +110,11 @@ def inspect(path):
     for name in ("Getter", "NamesGetter", "SplitNamesGetter"):
         check("Nametag " + name + " binding", constants[f"k{name}SlotRva"],
               struct.pack("<Q", image_base + constants[f"k{name}Rva"]))
-    check("Nametag own gate", 0x5397F2C, bytes.fromhex("48 3b 9d b8 00 00 00 74 db"))
-    check("Nametag depth argument", 0x5950F9E, bytes.fromhex("c6 44 24 50 00"))
-    check("Nametag material selector", 0x57E41A9,
-          bytes.fromhex("80 bd 60 01 00 00 00 48 0f 45 c1 49 0f 45 d0 48 01 d8 48 01 da"))
+    constants, arrays = source("NametagProfile.h")
+    for label, key in (("own gate context", "kOwnContext"),
+                       ("depth argument context", "kDepthContext"),
+                       ("material selector", "kMaterialSelector")):
+        check("Nametag " + label, constants[key + "Rva"], arrays[key])
     return {"build": "1.26.6501.0", "checks": checks,
             "portedProfilesMatch": all(item["matches"] for item in checks),
             "unportedFeatures": [],

@@ -25,6 +25,8 @@ Minecraft exposes the named sensitivity option as a normalized `0.0`-`1.0` value
 
 ## Input and GameInput
 
+- In build 1.26.6501.0, the executable references the names `CameraInjectInputLookDeltaSystem` and `CameraInputTransformSystem` while constructing or registering systems. Both references prepare a string and its length. Neither reference identifies a mouse-only angular displacement or establishes that camera updates run while the mouse is stationary. A rotation filter needs those two properties to drain pending mouse input without affecting another camera source.
+
 - Screen-aware shortcuts verify both player and shared game stacks. A shared menu must block shortcuts even if the player stack still contains a HUD. The exact getter bodies, constructors, names and vtable slots are verified before discovery.
 - Stack discovery walks native 0x20-byte entries from the active count at `+0x88`, with scene pointers at entry `+0x8` and vector start `+0x18`. A mismatched count, changing snapshot, unknown relevant type or incomplete read denies shortcuts. The reader invokes no virtual methods and writes no screen objects.
 - The native scene name follows scene `+0x40`, ScreenView `+0x50`, VisualTree root `+0x8` and its string `+0x20`. ScreenView `+0x480` is a transition flag, not an input passthrough flag. Transitioning screens deny shortcuts, including closing chat. Stable native debug/toast overlays may be skipped by exact name.

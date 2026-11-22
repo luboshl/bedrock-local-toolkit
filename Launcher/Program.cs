@@ -29,7 +29,7 @@ internal static class Program
         uint TransitionDurationMs, float MouseSensitivity, float SensitivityScalingStrength,
         string Zoom, string Nametag, string AlwaysDay, string FullBright, string StatusIndicator, string SafeDetach,
         bool ShowNametagWhenHudHidden, bool ShowFpsCounter,
-        bool AllowUnsupportedGameVersion = false);
+        bool AllowUnsupportedGameVersion = false, bool CameraSmoothingEnabled = false, float CameraSmoothingStrength = 5f);
 
     private static int Main()
     {
@@ -52,6 +52,10 @@ internal static class Program
                     "WARNING: Unsupported-version mode is experimental. It does not make this game build compatible; " +
                     "features remain disabled unless their existing safety profiles validate.");
             }
+
+            if (zoomConfig.CameraSmoothingEnabled)
+                Console.WriteLine($"Camera rotation smoothing requested at strength {zoomConfig.CameraSmoothingStrength}. " +
+                    "Unavailable in this build of the toolkit: the native camera input profile is pending verification.");
 
             var target = WaitForSupportedGame(TimeSpan.FromSeconds(90), zoomConfig.AllowUnsupportedGameVersion);
             Console.WriteLine($"Verified target: PID {target.ProcessId}, {target.PackageFullName}, x64.");
@@ -179,7 +183,9 @@ internal static class Program
             ReadBoolean(nametagValues, "show_when_hud_hidden", defaults.ShowNametagWhenHudHidden),
             showFpsCounter,
             compatibilityValues.TryGetValue("AllowUnsupportedGameVersion", out var allowUnsupported) &&
-                bool.TryParse(allowUnsupported, out var allowUnsupportedVersion) && allowUnsupportedVersion);
+                bool.TryParse(allowUnsupported, out var allowUnsupportedVersion) && allowUnsupportedVersion,
+            ReadBoolean(zoomValues, "CameraSmoothingEnabled", defaults.CameraSmoothingEnabled),
+            ReadFloat("CameraSmoothingStrength", defaults.CameraSmoothingStrength, 1f, 10f));
         var keys = new[] { config.Zoom, config.Nametag, config.AlwaysDay, config.FullBright, config.StatusIndicator, config.SafeDetach };
         if (keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != keys.Length)
             throw new InvalidDataException($"Keyboard shortcuts in {path} must be unique.");

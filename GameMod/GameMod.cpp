@@ -119,6 +119,8 @@ namespace
         ULONGLONG transitionDurationMs = kDefaultZoomTransitionDurationMs;
         float mouseSensitivity = 45.0f;
         float sensitivityScalingStrength = 1.5f;
+        bool cameraSmoothingEnabled = false;
+        float cameraSmoothingStrength = 5.0f;
         bool showNametagWhenHudHidden = true;
         int zoomKey = 'T';
         int nametagKey = VK_F7;
@@ -1124,7 +1126,8 @@ namespace
         if (!readZoomFloat(L"FirstPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.firstPersonFov) ||
             !readZoomFloat(L"ThirdPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.thirdPersonFov) ||
             !readZoomFloat(L"MouseSensitivity", kMouseSensitivityMinimum, kMouseSensitivityMaximum, loaded.mouseSensitivity) ||
-            !readZoomFloat(L"SensitivityScalingStrength", 1.0f, 2.0f, loaded.sensitivityScalingStrength)) return false;
+            !readZoomFloat(L"SensitivityScalingStrength", 1.0f, 2.0f, loaded.sensitivityScalingStrength) ||
+            !readZoomFloat(L"CameraSmoothingStrength", 1.0f, 10.0f, loaded.cameraSmoothingStrength)) return false;
         if (ReadToolkitConfigValue(L"Zoom", L"TransitionDurationMs", value, configPath))
         {
             value = TrimWhitespace(value);
@@ -1140,13 +1143,17 @@ namespace
             std::wstring keyName;
             return !ReadToolkitConfigValue(L"Shortcuts", name, keyName, configPath) || ParseVirtualKey(keyName, target);
         };
-        if (ReadToolkitConfigValue(L"nametag", L"show_when_hud_hidden", value, configPath))
+        const auto readBoolean = [&](const wchar_t* section, const wchar_t* key, bool& target)
         {
+            if (!ReadToolkitConfigValue(section, key, value, configPath)) return true;
             value = TrimWhitespace(value);
-            if (_wcsicmp(value.c_str(), L"true") == 0) loaded.showNametagWhenHudHidden = true;
-            else if (_wcsicmp(value.c_str(), L"false") == 0) loaded.showNametagWhenHudHidden = false;
+            if (_wcsicmp(value.c_str(), L"true") == 0) target = true;
+            else if (_wcsicmp(value.c_str(), L"false") == 0) target = false;
             else return false;
-        }
+            return true;
+        };
+        if (!readBoolean(L"Zoom", L"CameraSmoothingEnabled", loaded.cameraSmoothingEnabled) ||
+            !readBoolean(L"nametag", L"show_when_hud_hidden", loaded.showNametagWhenHudHidden)) return false;
         if (ReadToolkitConfigValue(L"Compatibility", L"AllowUnsupportedGameVersion", value, configPath))
         {
             value = TrimWhitespace(value);

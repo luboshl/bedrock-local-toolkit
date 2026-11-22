@@ -136,6 +136,21 @@ namespace
             g_zoomConfig.transitionDurationMs == 75 && g_zoomConfig.mouseSensitivity == 45.0f &&
             g_zoomConfig.sensitivityScalingStrength == 1.5f && g_zoomConfig.zoomKey == 'T', "requested Zoom defaults");
         Check(!g_zoomConfig.allowUnsupportedGameVersion, "unsupported game version is refused by default");
+        Check(!g_zoomConfig.cameraSmoothingEnabled && g_zoomConfig.cameraSmoothingStrength == 5,
+            "existing configurations keep camera rotation smoothing disabled");
+        config.Set(L"Zoom", L"CameraSmoothingEnabled", L" TrUe ");
+        config.Set(L"Zoom", L"CameraSmoothingStrength", L"7.25");
+        Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.cameraSmoothingEnabled &&
+            g_zoomConfig.cameraSmoothingStrength == 7.25f, "camera smoothing settings parsed independently");
+        for (const auto invalid : {L"0.9", L"10.1", L"nan"})
+        {
+            config.Set(L"Zoom", L"CameraSmoothingStrength", invalid);
+            Check(!LoadZoomConfigFromPath(config.Path()), "invalid camera smoothing strength rejected");
+        }
+        config.Set(L"Zoom", L"CameraSmoothingStrength", nullptr);
+        config.Set(L"Zoom", L"CameraSmoothingEnabled", L"invalid");
+        Check(!LoadZoomConfigFromPath(config.Path()), "invalid camera smoothing toggle rejected");
+        config.Set(L"Zoom", L"CameraSmoothingEnabled", nullptr);
         config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L" TrUe ");
         Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.allowUnsupportedGameVersion,
             "unsupported game version opt-in accepts true case-insensitively");

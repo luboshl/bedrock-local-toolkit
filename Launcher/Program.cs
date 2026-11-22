@@ -26,7 +26,7 @@ internal static class Program
     private const uint RemoteCallTimeoutMs = 30_000;
 
     private sealed record ZoomConfig(float FirstPersonFov, float ThirdPersonFov,
-        uint TransitionDurationMs, float MouseSensitivity,
+        uint TransitionDurationMs, float MouseSensitivity, float SensitivityScalingStrength,
         string Zoom, string Nametag, string AlwaysDay, string FullBright, string StatusIndicator, string SafeDetach,
         bool ShowNametagWhenHudHidden, bool ShowFpsCounter,
         bool AllowUnsupportedGameVersion = false);
@@ -41,7 +41,8 @@ internal static class Program
             var zoomConfig = LoadZoomConfig(zoomConfigPath);
             Console.WriteLine($"Configuration ({zoomConfigPath}): FOV first-person {zoomConfig.FirstPersonFov}, " +
                 $"third-person {zoomConfig.ThirdPersonFov}, transition {zoomConfig.TransitionDurationMs} ms, " +
-                $"sensitivity {zoomConfig.MouseSensitivity}; Zoom {zoomConfig.Zoom}, Nametag {zoomConfig.Nametag}, Always day {zoomConfig.AlwaysDay}, Full Bright {zoomConfig.FullBright}, " +
+                $"sensitivity {zoomConfig.MouseSensitivity}, scaling strength {zoomConfig.SensitivityScalingStrength}; " +
+                $"Zoom {zoomConfig.Zoom}, Nametag {zoomConfig.Nametag}, Always day {zoomConfig.AlwaysDay}, Full Bright {zoomConfig.FullBright}, " +
                 $"indicator {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}; " +
                 $"show nametag when HUD hidden {zoomConfig.ShowNametagWhenHudHidden}; FPS counter {zoomConfig.ShowFpsCounter}; " +
                 $"allow unsupported game version {zoomConfig.AllowUnsupportedGameVersion}.");
@@ -106,7 +107,7 @@ internal static class Program
 
     private static ZoomConfig LoadZoomConfig(string path)
     {
-        var defaults = new ZoomConfig(25f, 29f, 75, 45f, "T", "F7", "F6", "F8", "F9", "F10", true, true);
+        var defaults = new ZoomConfig(25f, 29f, 75, 45f, 1.5f, "T", "F7", "F6", "F8", "F9", "F10", true, true);
         if (!File.Exists(path)) return defaults;
 
         var zoomValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -132,7 +133,8 @@ internal static class Program
             if (sectionValues is null) continue;
             var separator = line.IndexOf('=');
             if (separator <= 0) continue;
-            sectionValues[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+            // The native module's INI reader uses the first occurrence of a key.
+            sectionValues.TryAdd(line[..separator].Trim(), line[(separator + 1)..].Trim());
         }
 
         float ReadFloat(string key, float fallback, float minimum, float maximum)
@@ -170,6 +172,7 @@ internal static class Program
             ReadFloat("ThirdPersonFov", zoomValues.ContainsKey("Fov") ? legacyFov : defaults.ThirdPersonFov, 1f, 120f),
             ReadDuration(),
             ReadFloat("MouseSensitivity", defaults.MouseSensitivity, 0f, 100f),
+            ReadFloat("SensitivityScalingStrength", defaults.SensitivityScalingStrength, 1f, 2f),
             ReadKey("Zoom", defaults.Zoom), ReadKey("Nametag", defaults.Nametag),
             ReadKey("AlwaysDay", defaults.AlwaysDay), ReadKey("FullBright", defaults.FullBright),
             ReadKey("StatusIndicator", defaults.StatusIndicator), ReadKey("SafeDetach", defaults.SafeDetach),

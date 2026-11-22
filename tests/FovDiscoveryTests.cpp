@@ -2,6 +2,8 @@
 // No Minecraft process is opened and StartGameMod is never called.
 #include "../GameMod/GameMod.cpp"
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 
 namespace
@@ -101,7 +103,7 @@ namespace
         Check(LoadZoomConfigFromPath(config.Path()), "load defaults without a config");
         Check(g_zoomConfig.firstPersonFov == 25.0f && g_zoomConfig.thirdPersonFov == 29.0f &&
             g_zoomConfig.transitionDurationMs == 75 && g_zoomConfig.mouseSensitivity == 45.0f &&
-            g_zoomConfig.zoomKey == 'T', "requested Zoom defaults");
+            g_zoomConfig.sensitivityScalingStrength == 1.5f && g_zoomConfig.zoomKey == 'T', "requested Zoom defaults");
         Check(!g_zoomConfig.allowUnsupportedGameVersion, "unsupported game version is refused by default");
         config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L" TrUe ");
         Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.allowUnsupportedGameVersion,
@@ -131,6 +133,19 @@ namespace
         config.Set(L"Zoom", L"Fov", L"33.5");
         config.Set(L"Zoom", L"TransitionDurationMs", L"275");
         config.Set(L"Zoom", L"MouseSensitivity", L"27.5");
+        Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.sensitivityScalingStrength == 1.5f,
+            "existing INI files use the stronger default curve");
+        for (const auto invalid : {L"0.99", L"2.01", L"nan", L"inf", L"1.5x"})
+        {
+            config.Set(L"Zoom", L"SensitivityScalingStrength", invalid);
+            Check(!LoadZoomConfigFromPath(config.Path()), "invalid sensitivity scaling strength rejected");
+        }
+        for (const auto endpoint : {L"1", L"2"})
+        {
+            config.Set(L"Zoom", L"SensitivityScalingStrength", endpoint);
+            Check(LoadZoomConfigFromPath(config.Path()), "sensitivity scaling strength endpoint accepted");
+        }
+        config.Set(L"Zoom", L"SensitivityScalingStrength", L"1.75");
         config.Set(L"Shortcuts", L"Zoom", L"Z");
         config.Set(L"Shortcuts", L"Nametag", L"F1");
         config.Set(L"Shortcuts", L"AlwaysDay", L"F2");
@@ -140,7 +155,7 @@ namespace
         Check(LoadZoomConfigFromPath(config.Path()), "load [Zoom] and [Shortcuts]");
         Check(g_zoomConfig.firstPersonFov == 33.5f && g_zoomConfig.thirdPersonFov == 33.5f &&
             g_zoomConfig.transitionDurationMs == 275 &&
-            g_zoomConfig.mouseSensitivity == 27.5f, "Zoom settings parsed");
+            g_zoomConfig.mouseSensitivity == 27.5f && g_zoomConfig.sensitivityScalingStrength == 1.75f, "Zoom settings parsed");
         config.Set(L"Zoom", L"FirstPersonFov", L"15.5");
         Check(LoadZoomConfigFromPath(config.Path()) &&
             g_zoomConfig.firstPersonFov == 15.5f && g_zoomConfig.thirdPersonFov == 33.5f,
@@ -168,6 +183,19 @@ namespace
         config.Set(L"Shortcuts", L"StatusIndicator", L"F4");
         config.Set(L"Shortcuts", L"SafeDetach", L"F4");
         Check(!LoadZoomConfigFromPath(config.Path()), "duplicate shortcuts rejected");
+    }
+
+    void TestDuplicateZoomSensitivityScalingStrength()
+    {
+        TemporaryToolkitConfig config;
+        {
+            std::ofstream ini{std::filesystem::path(config.Path())};
+            ini << "[Zoom]\nSensitivityScalingStrength=1.5\nSensitivityScalingStrength=2\n";
+            ini.close();
+            Check(ini.good(), "write duplicate sensitivity scaling strength entries");
+        }
+        Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.sensitivityScalingStrength == 1.5f,
+            "the first sensitivity scaling strength entry takes precedence");
     }
 
     void TestFpsCounterConfig()
@@ -471,41 +499,48 @@ namespace
 
     void TestZoomMouseSensitivityInterpolation()
     {
-        Check(GetZoomMouseSensitivityValue(0.24f, 45.0f, 70.0f, 70.0f) == 0.24f,
+        Check(GetZoomMouseSensitivityValue(0.24f, 45.0f, 1.0f, 70.0f, 70.0f) == 0.24f,
             "normal FOV keeps the Minecraft sensitivity option unchanged");
 
         constexpr double degreesToRadians = 0.017453292519943295769;
-        const float normalValue = GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, 70.0f);
-        const float intermediateValue = GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, 35.5f);
+        const float normalValue = GetZoomMouseSensitivityValue(0.24f, 100.0f, 1.0f, 70.0f, 70.0f);
+        const float intermediateValue = GetZoomMouseSensitivityValue(0.24f, 100.0f, 1.0f, 70.0f, 35.5f);
         const double normalProjection = std::tan(70.0 * degreesToRadians * 0.5);
         const double intermediateProjection = std::tan(35.5 * degreesToRadians * 0.5);
         Check(std::fabs(static_cast<double>(intermediateValue) / intermediateProjection -
             static_cast<double>(normalValue) / normalProjection) < 0.0001,
             "intermediate FOV preserves screen-space mouse movement with full zoom sensitivity");
 
-        const float minimumValue = GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, 1.0f);
+        const float minimumValue = GetZoomMouseSensitivityValue(0.24f, 100.0f, 1.0f, 70.0f, 1.0f);
         Check(std::fabs(minimumValue - static_cast<float>(0.24 *
             std::tan(0.5 * degreesToRadians) / normalProjection)) < 0.00001f,
             "minimum FOV compensates for the camera projection's optical magnification");
-        const float reducedValue = GetZoomMouseSensitivityValue(0.24f, 45.0f, 70.0f, 1.0f);
+        const float reducedValue = GetZoomMouseSensitivityValue(0.24f, 45.0f, 1.0f, 70.0f, 1.0f);
         Check(reducedValue < minimumValue && std::fabs(reducedValue - minimumValue * 0.45f) < 0.00001f,
             "configured zoom sensitivity scales the optical compensation at maximum zoom");
-        bool smooth = true;
-        float previousValue = 0.24f;
-        for (int step = 1; step <= 690; ++step)
+        const float defaultStrength = ZoomConfig{}.sensitivityScalingStrength;
+        const float deepZoom = GetZoomMouseSensitivityValue(0.24f, 45.0f, defaultStrength, 70.0f, 1.0f);
+        Check(deepZoom > reducedValue * 0.10f && deepZoom < reducedValue * 0.12f,
+            "default strength gives about nine times finer sensitivity at 1 degree from 70 degrees");
+        for (const float strength : {1.0f, defaultStrength, 2.0f})
         {
-            const float fov = 70.0f - static_cast<float>(step) * 0.1f;
-            const float value = GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, fov);
-            smooth = smooth && value <= previousValue && previousValue - value < 0.001f;
-            previousValue = value;
+            float previousValue = GetZoomMouseSensitivityValue(0.24f, 45.0f, strength, 70.0f, 1.0f);
+            for (int step = 1; step <= 690; ++step)
+            {
+                const float fov = 1.0f + static_cast<float>(step) * 0.1f;
+                const float value = GetZoomMouseSensitivityValue(0.24f, 45.0f, strength, 70.0f, fov);
+                Check(value > previousValue && value - previousValue < 0.0015f,
+                    "sensitivity increases smoothly as the view widens");
+                previousValue = value;
+            }
+            Check(previousValue == 0.24f, "zooming out fully returns the exact native sensitivity");
         }
-        Check(smooth, "projection-compensated sensitivity changes monotonically without step-sized jumps");
-        Check(GetZoomMouseSensitivityValue(0.24f, 0.0f, 70.0f, 1.0f) == 0.0f,
+        Check(GetZoomMouseSensitivityValue(0.24f, 0.0f, 1.0f, 70.0f, 1.0f) == 0.0f,
             "zero configured zoom sensitivity stops camera movement at minimum FOV");
-        Check(GetZoomMouseSensitivityValue(0.24f, 100.0f, 70.0f, 0.0f) == minimumValue &&
-            GetZoomMouseSensitivityValue(0.24f, 12.0f, 70.0f, 120.0f) == 0.24f,
+        Check(GetZoomMouseSensitivityValue(0.24f, 100.0f, 1.0f, 70.0f, 0.0f) == minimumValue &&
+            GetZoomMouseSensitivityValue(0.24f, 12.0f, 1.0f, 70.0f, 120.0f) == 0.24f,
             "sensitivity calculation clamps FOV to its valid endpoints");
-        Check(GetZoomMouseSensitivityValue(0.0f, 45.0f, 70.0f, 1.0f) == 0.0f,
+        Check(GetZoomMouseSensitivityValue(0.0f, 45.0f, 1.0f, 70.0f, 1.0f) == 0.0f,
             "zero native sensitivity remains zero while zoomed");
     }
 
@@ -1264,6 +1299,7 @@ int main()
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
         TestToolkitConfig();
+        TestDuplicateZoomSensitivityScalingStrength();
         TestFpsCounterConfig();
         TestFpsCounterPresentation();
         TestFpsCounterShutdown();

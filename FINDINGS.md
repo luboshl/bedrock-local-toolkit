@@ -21,7 +21,7 @@ Always day uses the leaf at `0x293F240` through Dimension virtual slot `+0xF8`. 
 
 The exact expected bytes, call contexts and bindings in `GameMod\*Profile.h` are the source of truth. Diagnostic counters establish callback execution; only corresponding live checks establish visible behavior.
 
-Minecraft exposes the named sensitivity option as a normalized `0.0`-`1.0` value. Keep the verified live setting unchanged at normal FOV; during Zoom, scale it by the camera projection ratio `tan(current FOV / 2) / tan(normal FOV / 2)`. `MouseSensitivity` is a 0-100 multiplier on that compensated sensitivity at maximum Zoom.
+Minecraft exposes the named sensitivity option as a normalized `0.0`-`1.0` value. Keep the verified live setting unchanged at normal FOV; during Zoom, raise the camera projection ratio `tan(current FOV / 2) / tan(normal FOV / 2)` to `SensitivityScalingStrength` before applying the existing `MouseSensitivity` multiplier. Use the original sensitivity as the baseline on every frame so reversing the transition retraces the same curve.
 
 ## Input and GameInput
 

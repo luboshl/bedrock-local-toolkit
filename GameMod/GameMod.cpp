@@ -83,10 +83,10 @@ namespace
     }
 
     float GetZoomMouseSensitivityValue(float normalSensitivity, float targetSensitivityPercent,
-        float normalFov, float currentFov)
+        float scalingStrength, float normalFov, float currentFov)
     {
         if (!std::isfinite(normalSensitivity) || !std::isfinite(targetSensitivityPercent) ||
-            !std::isfinite(normalFov) || !std::isfinite(currentFov) ||
+            !std::isfinite(scalingStrength) || !std::isfinite(normalFov) || !std::isfinite(currentFov) ||
             normalFov <= kZoomMinimumFov)
             return normalSensitivity;
 
@@ -100,9 +100,8 @@ namespace
         if (!std::isfinite(normalProjectionScale) || normalProjectionScale <= 0.0)
             return normalSensitivity;
 
-        // Preserve approximately the same screen-space movement per mouse delta
-        // as the FOV narrows. Camera projection magnification is proportional to
-        // 1 / tan(FOV / 2), so sensitivity follows the inverse projection scale.
+        // A strength of one compensates for optical magnification. Higher
+        // exponents further slow screen-space motion as the view narrows.
         const double opticalSensitivityScale = std::tan(currentHalfAngle) / normalProjectionScale;
         const double zoomProgress = std::clamp(
             (boundedNormalFov - boundedCurrentFov) / (boundedNormalFov - minimumFov), 0.0, 1.0);
@@ -110,7 +109,7 @@ namespace
             static_cast<double>(targetSensitivityPercent), 0.0, 100.0) * kMouseSensitivityPercentScale;
         const double zoomMultiplier = 1.0 + (configuredMultiplier - 1.0) * zoomProgress;
         return static_cast<float>(static_cast<double>(normalSensitivity) *
-            opticalSensitivityScale * zoomMultiplier);
+            std::pow(opticalSensitivityScale, scalingStrength) * zoomMultiplier);
     }
 
     struct ZoomConfig
@@ -119,6 +118,7 @@ namespace
         float thirdPersonFov = kDefaultThirdPersonZoomFov;
         ULONGLONG transitionDurationMs = kDefaultZoomTransitionDurationMs;
         float mouseSensitivity = 45.0f;
+        float sensitivityScalingStrength = 1.5f;
         bool showNametagWhenHudHidden = true;
         int zoomKey = 'T';
         int nametagKey = VK_F7;
@@ -670,7 +670,7 @@ namespace
         }
 
         const float desiredValue = GetZoomMouseSensitivityValue(g_zoomSensitivity.originalValue,
-            g_zoomConfig.mouseSensitivity, g_zoom.originalValue, currentFov);
+            g_zoomConfig.mouseSensitivity, g_zoomConfig.sensitivityScalingStrength, g_zoom.originalValue, currentFov);
         if (SameFloatBits(currentValue, desiredValue)) return;
         if (CompareExchangeFloat(g_zoomSensitivity.valueAddress, currentValue, desiredValue))
         {
@@ -1102,31 +1102,29 @@ namespace
     {
         ZoomConfig loaded;
         std::wstring value;
-        const auto parseFov = [](const std::wstring& text, float& target)
+        const auto parseFloat = [](const std::wstring& value, float minimum, float maximum, float& target)
         {
+            const auto text = TrimWhitespace(value);
             wchar_t* end = nullptr;
             const float parsed = std::wcstof(text.c_str(), &end);
             if (end == text.c_str() || *end != L'\0' || !std::isfinite(parsed) ||
-                parsed < kZoomMinimumFov || parsed > kZoomMaximumFov) return false;
+                parsed < minimum || parsed > maximum) return false;
             target = parsed;
             return true;
         };
         if (ReadToolkitConfigValue(L"Zoom", L"Fov", value, configPath))
         {
-            value = TrimWhitespace(value);
-            if (!parseFov(value, loaded.firstPersonFov)) return false;
+            if (!parseFloat(value, kZoomMinimumFov, kZoomMaximumFov, loaded.firstPersonFov)) return false;
             loaded.thirdPersonFov = loaded.firstPersonFov;
         }
-        if (ReadToolkitConfigValue(L"Zoom", L"FirstPersonFov", value, configPath))
+        const auto readZoomFloat = [&](const wchar_t* key, float minimum, float maximum, float& target)
         {
-            value = TrimWhitespace(value);
-            if (!parseFov(value, loaded.firstPersonFov)) return false;
-        }
-        if (ReadToolkitConfigValue(L"Zoom", L"ThirdPersonFov", value, configPath))
-        {
-            value = TrimWhitespace(value);
-            if (!parseFov(value, loaded.thirdPersonFov)) return false;
-        }
+            return !ReadToolkitConfigValue(L"Zoom", key, value, configPath) || parseFloat(value, minimum, maximum, target);
+        };
+        if (!readZoomFloat(L"FirstPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.firstPersonFov) ||
+            !readZoomFloat(L"ThirdPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.thirdPersonFov) ||
+            !readZoomFloat(L"MouseSensitivity", kMouseSensitivityMinimum, kMouseSensitivityMaximum, loaded.mouseSensitivity) ||
+            !readZoomFloat(L"SensitivityScalingStrength", 1.0f, 2.0f, loaded.sensitivityScalingStrength)) return false;
         if (ReadToolkitConfigValue(L"Zoom", L"TransitionDurationMs", value, configPath))
         {
             value = TrimWhitespace(value);
@@ -1136,16 +1134,6 @@ namespace
             if (errno == ERANGE || end == value.c_str() || *end != L'\0' || parsed < 1 || parsed > 10'000)
                 return false;
             loaded.transitionDurationMs = parsed;
-        }
-        if (ReadToolkitConfigValue(L"Zoom", L"MouseSensitivity", value, configPath))
-        {
-            value = TrimWhitespace(value);
-            wchar_t* end = nullptr;
-            const float parsed = std::wcstof(value.c_str(), &end);
-            if (end == value.c_str() || *end != L'\0' || !std::isfinite(parsed) ||
-                parsed < kMouseSensitivityMinimum || parsed > kMouseSensitivityMaximum)
-                return false;
-            loaded.mouseSensitivity = parsed;
         }
         const auto readKey = [&configPath](const wchar_t* name, int& target)
         {

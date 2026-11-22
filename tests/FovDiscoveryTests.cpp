@@ -1,6 +1,7 @@
 // Executes the real discovery/verification/restore code in this test process.
 // No Minecraft process is opened and StartGameMod is never called.
 #include "../GameMod/GameMod.cpp"
+#include "../GameMod/CameraRotationSmoothing.h"
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,36 @@ namespace
     void Check(bool condition, const char* message)
     {
         if (!condition) throw std::runtime_error(message);
+    }
+
+    void TestCameraRotationSmoothing()
+    {
+        for (const int fps : {60, 120, 144, 240})
+        {
+            zoom::CameraRotationSmoothing filter;
+            zoom::TurnDelta total{};
+            for (int frame = 0; frame < 3 * fps; ++frame)
+            {
+                const bool moving = frame < fps;
+                const double dt = (frame % 2 ? 1.5 : 0.5) / fps;
+                const auto out = filter.Update(moving ? zoom::TurnDelta{0.001, -0.002} :
+                    zoom::TurnDelta{}, dt, 10);
+                Check(out.pitch == -2 * out.yaw, "diagonal direction survives filtering");
+                total.yaw += out.yaw;
+                total.pitch += out.pitch;
+            }
+            Check(std::abs(total.yaw - 0.001 * fps) < 1e-12 &&
+                std::abs(total.pitch + 0.002 * fps) < 1e-12, "irregular updates conserve the turn");
+        }
+
+        zoom::CameraRotationSmoothing filter;
+        Check(filter.Update({1, 0}, 0, 5).yaw == 0, "zero elapsed time defers input");
+        Check(filter.Update({}, 0.01, 5).yaw > 0, "deferred input survives a zero interval");
+        filter.Reset();
+        Check(filter.Update({}, 0.01, 5).yaw == 0, "release discards remaining rotation");
+        filter.Update({2, 3}, 0, 5);
+        const auto resumed = filter.Update({1, -1}, 1, 5);
+        Check(resumed.yaw == 1 && resumed.pitch == -1, "long interruption drops stale input");
     }
 
     struct TemporaryToolkitConfig
@@ -1299,6 +1330,7 @@ int main()
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
         TestToolkitConfig();
+        TestCameraRotationSmoothing();
         TestDuplicateZoomSensitivityScalingStrength();
         TestFpsCounterConfig();
         TestFpsCounterPresentation();

@@ -25,6 +25,9 @@ Minecraft exposes the named sensitivity option as a normalized `0.0`-`1.0` value
 
 ## Input and GameInput
 
+- The current Zoom code identifies the named sensitivity wrapper but uses its field at `+0x18`. In a local 1.26.6501.0 world, this field stayed at `1.0` as the Camera sensitivity (mouse) slider moved from 50 to 76 and back to 50. A separate entry with key 1 inside the wrapper tracked `0.50 → 0.76 → 0.50`. The settings screen read that entry through the native keyed lookup, loading the float at entry `+0x14`. A successful write and restoration at wrapper `+0x18` therefore establishes neither a change in the slider value nor the actual angular response. The settings-screen call stack identifies a UI reader only. Gameplay consumption, binding lifetime and update cadence still need independent verification.
+- The native mouse event consumer at RVA `0x427530` packs relative X and Y into 16-bit integer fields in a 20-byte input record. Several routines consume that queue. Filtering the pair at enqueue time would quantize fractional output before the game converts mouse motion into angular displacement.
+
 - In build 1.26.6501.0, the executable references the names `CameraInjectInputLookDeltaSystem` and `CameraInputTransformSystem` while constructing or registering systems. Both references prepare a string and its length. Neither reference identifies a mouse-only angular displacement or establishes that camera updates run while the mouse is stationary. A rotation filter needs those two properties to drain pending mouse input without affecting another camera source.
 
 - Screen-aware shortcuts verify both player and shared game stacks. A shared menu must block shortcuts even if the player stack still contains a HUD. The exact getter bodies, constructors, names and vtable slots are verified before discovery.

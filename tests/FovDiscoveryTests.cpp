@@ -2,6 +2,8 @@
 // No Minecraft process is opened and StartGameMod is never called.
 #include "../GameMod/GameMod.cpp"
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 
 namespace
@@ -181,6 +183,19 @@ namespace
         config.Set(L"Shortcuts", L"StatusIndicator", L"F4");
         config.Set(L"Shortcuts", L"SafeDetach", L"F4");
         Check(!LoadZoomConfigFromPath(config.Path()), "duplicate shortcuts rejected");
+    }
+
+    void TestDuplicateZoomSensitivityScalingStrength()
+    {
+        TemporaryToolkitConfig config;
+        {
+            std::ofstream ini{std::filesystem::path(config.Path())};
+            ini << "[Zoom]\nSensitivityScalingStrength=1.5\nSensitivityScalingStrength=2\n";
+            ini.close();
+            Check(ini.good(), "write duplicate sensitivity scaling strength entries");
+        }
+        Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.sensitivityScalingStrength == 1.5f,
+            "the first sensitivity scaling strength entry takes precedence");
     }
 
     void TestFpsCounterConfig()
@@ -1284,6 +1299,7 @@ int main()
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
         TestToolkitConfig();
+        TestDuplicateZoomSensitivityScalingStrength();
         TestFpsCounterConfig();
         TestFpsCounterPresentation();
         TestFpsCounterShutdown();

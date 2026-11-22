@@ -133,7 +133,8 @@ internal static class Program
             if (sectionValues is null) continue;
             var separator = line.IndexOf('=');
             if (separator <= 0) continue;
-            sectionValues[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+            // The native module's INI reader uses the first occurrence of a key.
+            sectionValues.TryAdd(line[..separator].Trim(), line[(separator + 1)..].Trim());
         }
 
         float ReadFloat(string key, float fallback, float minimum, float maximum)

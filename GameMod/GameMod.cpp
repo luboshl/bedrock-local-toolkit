@@ -14,6 +14,7 @@
 #include <iterator>
 #include <intrin.h>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -245,6 +246,22 @@ namespace
     HWND g_trackedGameWindow = nullptr;
     HHOOK g_zoomKeyboardHook = nullptr;
     volatile LONG g_zoomKeyDown = 0;
+    // Both the low-level hook and the consumer run on the Zoom worker.
+    struct ZoomPress
+    {
+        HWND window = nullptr;
+        double pressedAt = 0.0;
+        std::optional<double> releasedAfterMs;
+
+        void Observe(HWND gameWindow, bool down, bool allowed, double now)
+        {
+            if (!allowed) *this = {};
+            else if (down) *this = {gameWindow, now, std::nullopt};
+            else if (window == gameWindow) releasedAfterMs = now - pressedAt;
+            else *this = {};
+        }
+    };
+    ZoomPress g_pendingZoomPress;
     struct GameInputHook
     {
         DWORD threadId = 0;
@@ -343,6 +360,7 @@ namespace
     FovZoomState g_zoom;
     ZoomSensitivityState g_zoomSensitivity;
     ZoomSensitivityState g_preparedZoomSensitivity;
+    ULONGLONG g_nextZoomSensitivityRetryAt = 0;
     FovPointerConfig g_fovPointerConfig;
     FovScanState g_fovScan;
     screens::Discovery g_screenDiscovery;
@@ -854,7 +872,7 @@ namespace
         uintptr_t currentAddress = 0;
         uintptr_t currentSlotAddress = 0;
         float currentValue = 0.0f;
-        const auto validation = ReadTrackedZoomMouseSensitivity(currentValue);
+        auto validation = ReadTrackedZoomMouseSensitivity(currentValue);
         if (validation != TrackedSensitivityValidation::Valid && !g_zoomSensitivity.bindingLost &&
             ReadVerifiedMouseSensitivity(g_zoomSensitivity.target.options, currentOwner, currentAddress,
                 currentSlotAddress, currentValue))
@@ -867,6 +885,10 @@ namespace
                 g_zoomSensitivity.active = false;
                 LogZoomStatus("mouse-sensitivity-target-changed");
                 return SensitivityRestoreResult::ValueChanged;
+            }
+            else
+            {
+                validation = ReadTrackedZoomMouseSensitivity(currentValue);
             }
         }
 
@@ -1560,9 +1582,9 @@ namespace
 
     bool StartFovScan();
 
-    bool CanStartZoom(HWND gameWindow)
+    bool CanStartZoom(HWND gameWindow, bool releasedTap)
     {
-        return fov::MayActivate(ModuleShortcutsAllowed(gameWindow), IsZoomKeyDown(),
+        return fov::MayActivate(ModuleShortcutsAllowed(gameWindow), releasedTap || IsZoomKeyDown(),
             (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0, ShortcutNeedsRelease(g_zoomConfig.zoomKey),
             g_zoomRestorePending, InterlockedCompareExchange(&g_stopRequested, 0, 0) != 0, true);
     }
@@ -1584,7 +1606,9 @@ namespace
         return false;
     }
 
-    void ApplyZoomAtTarget(HWND gameWindow, const fov::Target& target)
+    void FinishReleasedZoomPress(std::optional<double> releasedAfterMs);
+
+    void ApplyZoomAtTarget(HWND gameWindow, const fov::Target& target, std::optional<double> releasedAfterMs)
     {
         if (g_zoomKeyboardHook == nullptr || g_nativeMouseWheelTarget == nullptr ||
             g_nativeMouseEventTarget == nullptr || !g_nativeMouseHookStates[0].replacementVerified ||
@@ -1593,9 +1617,7 @@ namespace
             SetOverlayMessage(L"Zoom unavailable; input capture could not be installed", RGB(255, 170, 110));
             return;
         }
-        MSG pendingMessage{};
-        PeekMessageW(&pendingMessage, nullptr, 0, 0, PM_NOREMOVE);
-        if (!CanStartZoom(gameWindow))
+        if (!CanStartZoom(gameWindow, releasedAfterMs.has_value()))
         {
             SetOverlayMessage(L"Zoom input context changed; no memory changed", RGB(255, 170, 110));
             return;
@@ -1628,6 +1650,7 @@ namespace
                 g_zoom.transitionTargetValue = zoomFov;
                 g_zoom.transitionStartedAt = ZoomTimeMs();
                 LogZoomStatus("zoom-restarted-during-restore");
+                FinishReleasedZoomPress(releasedAfterMs);
             }
             return;
         }
@@ -1687,6 +1710,7 @@ namespace
             SetOverlayMessage(g_zoomSensitivity.active ?
                 L"Zooming; mouse sensitivity adjusted, release Zoom key to restore" :
                 L"Zooming; mouse sensitivity unchanged, release Zoom key to restore", RGB(135, 255, 170));
+            FinishReleasedZoomPress(releasedAfterMs);
             return;
         }
 
@@ -1706,7 +1730,7 @@ namespace
         }
     }
 
-    void ApplyZoom(HWND gameWindow)
+    void ApplyZoom(HWND gameWindow, std::optional<double> releasedAfterMs = std::nullopt)
     {
         if (!g_supportedBuild)
         {
@@ -1714,7 +1738,7 @@ namespace
         }
         else if (g_fovScan.result == FovScanResult::Unique)
         {
-            ApplyZoomAtTarget(gameWindow, g_fovScan.foundTarget);
+            ApplyZoomAtTarget(gameWindow, g_fovScan.foundTarget, releasedAfterMs);
         }
         else
         {
@@ -2829,14 +2853,20 @@ namespace
             const auto* keyboard = reinterpret_cast<const KBDLLHOOKSTRUCT*>(data);
             const bool keyDown = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
             const bool keyUp = message == WM_KEYUP || message == WM_SYSKEYUP;
+            if (keyboard->vkCode == VK_ESCAPE && keyDown) g_pendingZoomPress = {};
             const bool neededRelease = ShortcutNeedsRelease(static_cast<int>(keyboard->vkCode));
+            bool shortcutsAllowed = false;
             if (keyboard->vkCode == static_cast<DWORD>(g_zoomConfig.zoomKey) && keyUp && neededRelease)
                 InterlockedExchange(&g_zoomReleasePassPending, kZoomReleasePassAll);
             for (const int key : {g_zoomConfig.zoomKey, g_zoomConfig.nametagKey, g_zoomConfig.alwaysDayKey,
                 g_zoomConfig.fullBrightKey, g_zoomConfig.indicatorKey, g_zoomConfig.exitKey})
             {
                 if (keyboard->vkCode == static_cast<DWORD>(key) && (keyDown || keyUp))
-                    ObserveShortcut(key, keyDown, ModuleShortcutsAllowed(g_trackedGameWindow));
+                {
+                    shortcutsAllowed = ModuleShortcutsAllowed(g_trackedGameWindow);
+                    ObserveShortcut(key, keyDown, shortcutsAllowed);
+                    break;
+                }
             }
             if (keyboard->vkCode == static_cast<DWORD>(g_zoomConfig.zoomKey))
             {
@@ -2848,7 +2878,13 @@ namespace
                 {
                     LogZoomStatus(keyDown ? "zoom-key-down" : "zoom-key-up");
                 }
-                if ((keyDown || keyUp) && !(keyUp && neededRelease) && ShouldHideZoomKeyFromGame())
+                if (stateChanged)
+                {
+                    const bool allowed = shortcutsAllowed && !neededRelease &&
+                        (GetAsyncKeyState(VK_ESCAPE) & 0x8000) == 0;
+                    g_pendingZoomPress.Observe(g_trackedGameWindow, keyDown, allowed, ZoomTimeMs());
+                }
+                if ((keyDown || keyUp) && !(keyUp && neededRelease) && ShouldHideZoomKeyFromGame(shortcutsAllowed))
                 {
                     // The configured Zoom shortcut is handled locally; letting it
                     // reach the game can also trigger a held gameplay binding.
@@ -2914,7 +2950,17 @@ namespace
         }
     }
 
-    void PrepareZoomSensitivity(const fov::Target& target)
+    void FinishReleasedZoomPress(std::optional<double> releasedAfterMs)
+    {
+        if (!releasedAfterMs) return;
+
+        // Replay only the part of the easing curve covered by the held key,
+        // then start restoring immediately at the current wall-clock time.
+        AdvanceZoomTransition(g_zoom.transitionStartedAt + *releasedAfterMs);
+        BeginZoomRestoreTransition();
+    }
+
+    void PrepareZoomSensitivity(const fov::Target& target, ULONGLONG now = GetTickCount64())
     {
         // Resolve uniqueness ahead of activation. Recheck the live binding
         // and read the current value before starting a Zoom session.
@@ -2924,7 +2970,16 @@ namespace
         LogZoomStatus("mouse-sensitivity-discovery-started");
         sensitivity.active = ReadVerifiedMouseSensitivity(target.options, sensitivity.owner,
             sensitivity.valueAddress, sensitivity.optionsSlotAddress, sensitivity.originalValue);
+        g_nextZoomSensitivityRetryAt = now + kFovRetryDelayMs;
         LogZoomStatus(sensitivity.active ? "mouse-sensitivity-ready" : "mouse-sensitivity-unavailable");
+    }
+
+    void RetryZoomSensitivityWhileIdle(const fov::Target& target, ULONGLONG now)
+    {
+        if (g_zoom.active || IsZoomKeyDown() || g_pendingZoomPress.window != nullptr) return;
+        if (!fov::SameTarget(g_preparedZoomSensitivity.target, target) ||
+            (!g_preparedZoomSensitivity.active && now >= g_nextZoomSensitivityRetryAt))
+            PrepareZoomSensitivity(target, now);
     }
 
     void FinishFovScan(FovScanResult result)
@@ -3111,8 +3166,7 @@ namespace
             if (ReadVerifiedTarget(g_fovScan.foundTarget.options, current, values) &&
                 fov::SameTarget(current, g_fovScan.foundTarget))
             {
-                if (!g_zoom.active && !IsZoomKeyDown() && !fov::SameTarget(g_preparedZoomSensitivity.target, current))
-                    PrepareZoomSensitivity(current);
+                RetryZoomSensitivityWhileIdle(current, GetTickCount64());
                 return;
             }
             if (g_zoom.active)
@@ -3373,6 +3427,7 @@ namespace
                 detachWasDown = detachDown;
             }
             const bool active = foreground && screens::AllowsShortcuts();
+            const ZoomPress press = std::exchange(g_pendingZoomPress, {});
             if (active != shortcutsWereAllowed)
             {
                 LogZoomStatus(active ? "gameplay-shortcuts-allowed" : "screen-shortcuts-blocked");
@@ -3405,7 +3460,8 @@ namespace
                 }
                 escapeWasDown = escapeDown;
 
-                if (f6Down && !f6WasDown && !stopWhenRestored)
+                const bool recordedPress = press.window == gameWindow;
+                if ((recordedPress || (f6Down && !f6WasDown)) && !escapeDown && !stopWhenRestored)
                 {
                     if (zoomNeedsRelease)
                     {
@@ -3417,7 +3473,7 @@ namespace
                     }
                     else
                     {
-                        ApplyZoom(gameWindow);
+                        ApplyZoom(gameWindow, recordedPress ? press.releasedAfterMs : std::nullopt);
                     }
                 }
 
@@ -3615,6 +3671,10 @@ namespace
                     lastOwnChecks = checks;
                     lastNametagLog = GetTickCount64();
                 }
+                // A discovery slice may have queued keyboard callbacks. Leave
+                // any newly recorded edge for the input step in the next pass.
+                PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+                if (g_pendingZoomPress.window != nullptr) continue;
                 if (!g_zoom.active && fov::MayActivate(ModuleShortcutsAllowed(gameWindow),
                     IsZoomKeyDown(),
                     (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0,

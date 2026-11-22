@@ -884,6 +884,27 @@ namespace
             "Zoom rejects a rebound prepared sensitivity and requests fresh discovery");
     }
 
+    void TestPreparedZoomSensitivityRetry()
+    {
+        Fixture fixture;
+        constexpr ULONGLONG startedAt = 1000;
+        PrepareZoomSensitivity(fixture.target, startedAt);
+        Check(!g_preparedZoomSensitivity.active, "initial sensitivity discovery can fail on a valid FOV target");
+
+        fixture.AddSensitivity();
+        RetryZoomSensitivityWhileIdle(fixture.target, startedAt + kFovRetryDelayMs - 1);
+        Check(!g_preparedZoomSensitivity.active, "discovery does not retry before its deadline");
+        g_zoom.active = true;
+        RetryZoomSensitivityWhileIdle(fixture.target, startedAt + kFovRetryDelayMs);
+        Check(!g_preparedZoomSensitivity.active, "discovery does not retry during Zoom");
+        g_zoom.active = false;
+        RetryZoomSensitivityWhileIdle(fixture.target, startedAt + kFovRetryDelayMs);
+        Check(BindPreparedZoomSensitivity(fixture.target) && g_zoomSensitivity.originalValue == 0.50f,
+            "idle retry discovers a sensitivity binding on the same FOV target");
+        g_zoomSensitivity = {};
+        g_preparedZoomSensitivity = {};
+    }
+
     void TestZoomSensitivityRestorationAfterFovReplacement()
     {
         Fixture fixture;
@@ -1184,6 +1205,43 @@ namespace
         g_zoomConfig.transitionDurationMs = originalDuration;
     }
 
+    void TestQuickZoomPressBeforeWorkerIteration()
+    {
+        Fixture fixture;
+        const auto window = reinterpret_cast<HWND>(1);
+        ZoomPress press;
+        press.Observe(window, true, false, 990.0);
+        press.Observe(window, false, true, 995.0);
+        Check(press.window == nullptr, "a press outside gameplay cannot become a Zoom tap on release");
+        press.Observe(window, true, true, 1000.0);
+        press.Observe(window, false, false, 1010.0);
+        Check(press.window == nullptr, "leaving gameplay during a press cancels the queued tap");
+        press.Observe(window, true, true, 1020.0);
+        press.Observe(window, false, true, 1040.0);
+        Check(press.window == window && press.releasedAfterMs == 20.0,
+            "an eligible down and up received before the worker preserve the tap duration");
+
+        const auto previousDuration = g_zoomConfig.transitionDurationMs;
+        g_zoomConfig.transitionDurationMs = 80;
+        g_zoom = {};
+        g_zoom.target = fixture.target;
+        g_zoom.originalValue = 70.0f;
+        g_zoom.originalMinimumValue = 30.0f;
+        g_zoom.active = true;
+        g_zoom.displayedValue = 70.0f;
+        g_zoom.transitionStartValue = 70.0f;
+        g_zoom.transitionTargetValue = 30.0f;
+        g_zoom.transitionStartedAt = 2000.0;
+        g_zoom.transitionActive = true;
+        g_zoomRestorePending = false;
+        FinishReleasedZoomPress(press.releasedAfterMs);
+        Check(fixture.Value() == 63.75f && g_zoom.restoring && g_zoom.transitionStartValue == 63.75f,
+            "the queued tap applies its portion of Zoom easing and immediately starts restoration");
+        AdvanceZoomTransition(g_zoom.transitionStartedAt + 80.0);
+        Check(fixture.Value() == 70.0f && !g_zoom.active, "the queued tap returns to the original FOV");
+        g_zoomConfig.transitionDurationMs = previousDuration;
+    }
+
     void CompleteScan()
     {
         Check(StartFovScan(), "scan starts");
@@ -1216,6 +1274,7 @@ int main()
         TestZoomSensitivityRestoration();
         TestSensitivityScanBatchBoundaries();
         TestPreparedZoomSensitivityBinding();
+        TestPreparedZoomSensitivityRetry();
         TestZoomSensitivityRestorationAfterFovReplacement();
         TestZoomSensitivityOwnerReplacementPreserved();
         TestZoomSensitivityOptionsBindingReplacementStopsUpdates();
@@ -1225,6 +1284,7 @@ int main()
         TestBlockedDiagnosticWriter();
         TestPendingRestoreDiagnostics();
         TestZoomTransitionTiming();
+        TestQuickZoomPressBeforeWorkerIteration();
         TestMessageHookOwnership();
         TestWorkerWaitMessages();
         TestOverlayVisibilityPositionFlags();

@@ -40,8 +40,15 @@ namespace
         filter.Reset();
         Check(filter.Update({}, 0.01, 5).yaw == 0, "release discards remaining rotation");
         filter.Update({2, 3}, 0, 5);
-        const auto resumed = filter.Update({1, -1}, 1, 5);
-        Check(resumed.yaw == 1 && resumed.pitch == -1, "long interruption drops stale input");
+        const auto delayed = filter.Update({1, -1}, 0.30, 10);
+        const auto tail = filter.Update({}, 2, 10);
+        Check(std::abs(delayed.yaw + tail.yaw - 3) < 1e-12 &&
+            std::abs(delayed.pitch + tail.pitch - 2) < 1e-12,
+            "a slow frame during continuous Zoom preserves accumulated movement on both axes");
+        filter.Update({2, 3}, 0, 5);
+        filter.Reset();
+        const auto resumed = filter.Update({1, -1}, 2, 5);
+        Check(resumed.yaw == 1 && resumed.pitch == -1, "an explicit interruption discards pending rotation");
     }
 
     struct TemporaryToolkitConfig

@@ -20,7 +20,7 @@ namespace zoom
         // elapsedSeconds is the monotonic interval since the previous update.
         TurnDelta Update(TurnDelta input, double elapsedSeconds, double strength)
         {
-            if (!std::isfinite(elapsedSeconds) || elapsedSeconds < 0 || elapsedSeconds > 0.25 ||
+            if (!std::isfinite(elapsedSeconds) || elapsedSeconds < 0 ||
                 !(strength >= 1 && strength <= 10) ||
                 !std::isfinite(input.yaw) || !std::isfinite(input.pitch))
             {
@@ -31,7 +31,9 @@ namespace zoom
             pending.yaw += input.yaw;
             pending.pitch += input.pitch;
             // Strength 1 to 10 corresponds to a time constant of 4 to 40 ms.
-            const double fraction = -std::expm1(-elapsedSeconds / (0.004 * strength));
+            // At two seconds even the longest time constant gives a fraction of 1
+            // at double precision. Bound the exponent for arbitrarily long frames.
+            const double fraction = -std::expm1(-std::fmin(elapsedSeconds, 2.0) / (0.004 * strength));
             const TurnDelta output{pending.yaw * fraction, pending.pitch * fraction};
             pending.yaw -= output.yaw;
             pending.pitch -= output.pitch;

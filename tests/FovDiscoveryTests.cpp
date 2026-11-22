@@ -866,6 +866,24 @@ namespace
             "batched sensitivity scan rejects duplicate bindings in different batches");
     }
 
+    void TestPreparedZoomSensitivityBinding()
+    {
+        Fixture fixture;
+        fixture.AddSensitivity();
+        PrepareZoomSensitivity(fixture.target);
+
+        const float changedValue = 0.65f;
+        std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &changedValue, sizeof(changedValue));
+        Check(BindPreparedZoomSensitivity(fixture.target) &&
+            g_zoomSensitivity.originalValue == changedValue && g_zoomSensitivity.zoomValue == changedValue,
+            "Zoom starts from the live sensitivity value after discovery");
+
+        fixture.ReplaceSensitivityOptionBinding();
+        Check(!BindPreparedZoomSensitivity(fixture.target) && !g_zoomSensitivity.active &&
+            g_preparedZoomSensitivity.target.options == 0,
+            "Zoom rejects a rebound prepared sensitivity and requests fresh discovery");
+    }
+
     void TestZoomSensitivityRestorationAfterFovReplacement()
     {
         Fixture fixture;
@@ -1197,6 +1215,7 @@ int main()
         TestZoomMouseSensitivityInterpolation();
         TestZoomSensitivityRestoration();
         TestSensitivityScanBatchBoundaries();
+        TestPreparedZoomSensitivityBinding();
         TestZoomSensitivityRestorationAfterFovReplacement();
         TestZoomSensitivityOwnerReplacementPreserved();
         TestZoomSensitivityOptionsBindingReplacementStopsUpdates();

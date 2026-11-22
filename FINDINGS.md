@@ -39,6 +39,7 @@ Minecraft exposes the named sensitivity option as a normalized `0.0`-`1.0` value
 - GameInput V0 and V2 have different interfaces and structure layouts. Verify the correct version and specific read path; do not mix up vtable indexes or assume input passes through Windows messages.
 - `WM_POINTERWHEEL`, like `WM_MOUSEWHEEL`, carries a signed delta in the high word of `wParam`. When forwarding it to Zoom, preserve the sign and partial steps, and leave the message unchanged when Zoom is inactive.
 - `WH_KEYBOARD_LL` alone did not capture every in-game path for the Zoom key. Filtering must account for the input interfaces actually in use and verify that the key does not trigger an in-game action at the same time as Zoom.
+- The full mouse-sensitivity lookup can take longer than a short Zoom press. Resolve the unique option during FOV preparation and revalidate the live slot, owner, and value when a Zoom session starts. Restore an unchanged binding directly; use discovery as a fallback when the tracked option cannot be validated. Keep periodic input-hook maintenance behind Zoom input processing. The `time_ms` field in Zoom diagnostics records the event time, which allows measuring the interval from `zoom-key-down` to `zoom-transition-first-fov-write` even when the writer flushes both events together.
 
 In 1.26.6501.0, a live Zoom scroll changed the FOV through the verified wheel filter. Desktop mouse response and camera smoothness still require dedicated live checks.
 

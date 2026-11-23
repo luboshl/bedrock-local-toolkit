@@ -1,6 +1,7 @@
 // Executes the real discovery/verification/restore code in this test process.
 // No Minecraft process is opened and StartGameMod is never called.
 #include "../GameMod/GameMod.cpp"
+#include "../GameMod/CameraRotationSmoothing.h"
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,120 @@ namespace
     void Check(bool condition, const char* message)
     {
         if (!condition) throw std::runtime_error(message);
+    }
+
+    void TestCameraRotationSmoothing()
+    {
+        const auto relay = zoom::camera::Relay(0x0123456789ABCDEF);
+        const std::array<unsigned char, 15> expected{
+            0x41, 0x89, 0xD8, 0x48, 0xB8, 0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01, 0xFF, 0xE0
+        };
+        Check(relay == expected, "camera relay forwards EBX as the third argument and preserves the return address");
+        Check(!zoom::camera::Matches(0) && !zoom::camera::Matches(UINTPTR_MAX),
+            "invalid camera profile addresses are refused");
+        for (const int fps : {60, 120, 144, 240})
+        {
+            zoom::CameraRotationSmoothing filter;
+            zoom::TurnDelta total{};
+            for (int frame = 0; frame < 3 * fps; ++frame)
+            {
+                const bool moving = frame < fps;
+                const double dt = (frame % 2 ? 1.5 : 0.5) / fps;
+                const auto out = filter.Update(moving ? zoom::TurnDelta{0.001, -0.002} :
+                    zoom::TurnDelta{}, dt, 10);
+                Check(out.pitch == -2 * out.yaw, "diagonal direction survives filtering");
+                total.yaw += out.yaw;
+                total.pitch += out.pitch;
+            }
+            Check(std::abs(total.yaw - 0.001 * fps) < 1e-12 &&
+                std::abs(total.pitch + 0.002 * fps) < 1e-12, "irregular updates conserve the turn");
+        }
+
+        zoom::CameraRotationSmoothing filter;
+        Check(filter.Update({1, 0}, 0, 5).yaw == 0, "zero elapsed time defers input");
+        Check(filter.Update({}, 0.01, 5).yaw > 0, "deferred input survives a zero interval");
+        filter.Reset();
+        Check(filter.Update({}, 0.01, 5).yaw == 0, "release discards remaining rotation");
+        filter.Update({2, 3}, 0, 5);
+        const auto delayed = filter.Update({1, -1}, 0.30, 10);
+        const auto tail = filter.Update({}, 2, 10);
+        Check(std::abs(delayed.yaw + tail.yaw - 3) < 1e-12 &&
+            std::abs(delayed.pitch + tail.pitch - 2) < 1e-12,
+            "a slow frame during continuous Zoom preserves accumulated movement on both axes");
+        filter.Update({2, 3}, 0, 5);
+        filter.Reset();
+        const auto resumed = filter.Update({1, -1}, 2, 5);
+        Check(resumed.yaw == 1 && resumed.pitch == -1, "an explicit interruption discards pending rotation");
+    }
+
+    void TestCameraTurnFilterLifecycle()
+    {
+        CameraTurnFilter filter;
+        int firstPlayer = 0, secondPlayer = 0;
+        const zoom::TurnDelta input{2, -3};
+        const auto first = filter.Update(&firstPlayer, 1, input, 5000, 10);
+        Check(first.yaw > 0 && first.yaw < input.yaw && first.pitch < 0 && first.pitch > input.pitch,
+            "the first eligible update smooths both axes");
+        const auto next = filter.Update(&firstPlayer, 1, {}, 5010, 10);
+        const double fraction = -std::expm1(-0.010 / 0.040);
+        Check(std::abs(next.yaw - (input.yaw - first.yaw) * fraction) < 1e-12 &&
+            std::abs(next.pitch - (input.pitch - first.pitch) * fraction) < 1e-12,
+            "the next callback uses its measured interval and drains the first delta");
+        const auto newSession = filter.Update(&firstPlayer, 2, input, 6000, 10);
+        const auto newPlayer = filter.Update(&secondPlayer, 2, input, 7000, 10);
+        filter.Reset();
+        const auto resumed = filter.Update(&secondPlayer, 2, input, 8000, 10);
+        for (const auto& output : {newSession, newPlayer, resumed})
+            Check(output.yaw == first.yaw && output.pitch == first.pitch,
+                "a new session, player, or eligible stream starts without old pending rotation");
+    }
+
+    void TestCameraHookRollback()
+    {
+        auto* site = static_cast<unsigned char*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE,
+            PAGE_READWRITE));
+        Check(site != nullptr, "allocate synthetic camera call site");
+        const HMODULE previousModule = g_module;
+        struct Cleanup
+        {
+            unsigned char* site;
+            HMODULE module;
+            ~Cleanup()
+            {
+                if (g_cameraRelay) VirtualFree(g_cameraRelay, 0, MEM_RELEASE);
+                VirtualFree(site, 0, MEM_RELEASE);
+                g_cameraRelay = nullptr;
+                g_cameraPatch = {};
+                g_cameraCallbacks = 0;
+                g_module = module;
+            }
+        } cleanup{site, previousModule};
+
+        g_module = GetModuleHandleW(nullptr);
+        g_cameraRelay = nametag::AllocateNear(reinterpret_cast<uintptr_t>(site));
+        Check(g_cameraRelay != nullptr, "allocate synthetic camera relay");
+        std::memcpy(site, zoom::camera::kCall, sizeof(zoom::camera::kCall));
+        DWORD previousProtection = 0;
+        Check(VirtualProtect(site, 4096, PAGE_EXECUTE_READ, &previousProtection) != FALSE,
+            "protect the original call site");
+        Check(nametag::Jump(g_cameraPatch, reinterpret_cast<uintptr_t>(site), zoom::camera::kCall,
+            sizeof(zoom::camera::kCall), reinterpret_cast<uintptr_t>(g_cameraRelay)), "prepare synthetic camera patch");
+        g_cameraPatch.replacement[0] = 0xE8;
+        Check(nametag::WritePatch(g_cameraPatch, true), "write the synthetic camera patch");
+        Check(VirtualProtect(site, 4096, PAGE_EXECUTE_READWRITE, &previousProtection) != FALSE,
+            "simulate a failed protection restore after writing the call");
+        g_cameraPatch.protectionPending = true;
+        g_cameraPatch.cachePending = true;
+        InterlockedExchange(&g_cameraCallbacks, 1);
+        Check(!RestoreCameraRotationHook() && g_cameraRelay && !g_cameraPatch.installed &&
+            nametag::Matches(reinterpret_cast<uintptr_t>(site), zoom::camera::kCall, sizeof(zoom::camera::kCall)),
+            "rollback restores the original call while keeping the relay for an active callback");
+        MEMORY_BASIC_INFORMATION page{};
+        Check(VirtualQuery(site, &page, sizeof(page)) && page.Protect == PAGE_EXECUTE_READ &&
+            !g_cameraPatch.protectionPending && !g_cameraPatch.cachePending,
+            "rollback restores page protection and flushes the call site");
+        InterlockedExchange(&g_cameraCallbacks, 0);
+        Check(RestoreCameraRotationHook() && !g_cameraRelay, "rollback retry releases the idle relay");
     }
 
     struct TemporaryToolkitConfig
@@ -105,6 +220,21 @@ namespace
             g_zoomConfig.transitionDurationMs == 75 && g_zoomConfig.mouseSensitivity == 45.0f &&
             g_zoomConfig.sensitivityScalingStrength == 1.5f && g_zoomConfig.zoomKey == 'T', "requested Zoom defaults");
         Check(!g_zoomConfig.allowUnsupportedGameVersion, "unsupported game version is refused by default");
+        Check(!g_zoomConfig.cameraSmoothingEnabled && g_zoomConfig.cameraSmoothingStrength == 5,
+            "existing configurations keep camera rotation smoothing disabled");
+        config.Set(L"Zoom", L"CameraSmoothingEnabled", L" TrUe ");
+        config.Set(L"Zoom", L"CameraSmoothingStrength", L"7.25");
+        Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.cameraSmoothingEnabled &&
+            g_zoomConfig.cameraSmoothingStrength == 7.25f, "camera smoothing settings parsed independently");
+        for (const auto invalid : {L"0.9", L"10.1", L"nan"})
+        {
+            config.Set(L"Zoom", L"CameraSmoothingStrength", invalid);
+            Check(!LoadZoomConfigFromPath(config.Path()), "invalid camera smoothing strength rejected");
+        }
+        config.Set(L"Zoom", L"CameraSmoothingStrength", nullptr);
+        config.Set(L"Zoom", L"CameraSmoothingEnabled", L"invalid");
+        Check(!LoadZoomConfigFromPath(config.Path()), "invalid camera smoothing toggle rejected");
+        config.Set(L"Zoom", L"CameraSmoothingEnabled", nullptr);
         config.Set(L"Compatibility", L"AllowUnsupportedGameVersion", L" TrUe ");
         Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.allowUnsupportedGameVersion,
             "unsupported game version opt-in accepts true case-insensitively");
@@ -1299,6 +1429,9 @@ int main()
         g_gameModuleBase = 0x10000000; // Synthetic profile; no game addresses are accessed.
         g_supportedBuild = true;
         TestToolkitConfig();
+        TestCameraRotationSmoothing();
+        TestCameraTurnFilterLifecycle();
+        TestCameraHookRollback();
         TestDuplicateZoomSensitivityScalingStrength();
         TestFpsCounterConfig();
         TestFpsCounterPresentation();

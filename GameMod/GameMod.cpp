@@ -31,6 +31,8 @@
 #include "DiagnosticWriter.h"
 #include "FpsCounter.h"
 #include "FpsProfile.h"
+#include "CameraRotationProfile.h"
+#include "CameraRotationSmoothing.h"
 
 namespace
 {
@@ -119,6 +121,8 @@ namespace
         ULONGLONG transitionDurationMs = kDefaultZoomTransitionDurationMs;
         float mouseSensitivity = 45.0f;
         float sensitivityScalingStrength = 1.5f;
+        bool cameraSmoothingEnabled = false;
+        float cameraSmoothingStrength = 5.0f;
         bool showNametagWhenHudHidden = true;
         int zoomKey = 'T';
         int nametagKey = VK_F7;
@@ -308,6 +312,11 @@ namespace
     void* g_nativeMouseWheelTarget = nullptr;
     void* g_nativeMouseEventTarget = nullptr;
     volatile LONG g_nativeMouseCallbacks = 0;
+    nametag::Patch g_cameraPatch{};
+    unsigned char* g_cameraRelay = nullptr;
+    volatile LONG g_cameraCallbacks = 0;
+    volatile LONG g_cameraSession = 0;
+    PVOID volatile g_cameraZoomWindow = nullptr;
     constexpr unsigned char kNativeMouseEntries[2][16] = {
         { 0x55, 0x56, 0x57, 0x48, 0x83, 0xEC, 0x60, 0x48,
             0x8D, 0x6C, 0x24, 0x60, 0x0F, 0x29, 0x75, 0xF0 },
@@ -1124,7 +1133,8 @@ namespace
         if (!readZoomFloat(L"FirstPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.firstPersonFov) ||
             !readZoomFloat(L"ThirdPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.thirdPersonFov) ||
             !readZoomFloat(L"MouseSensitivity", kMouseSensitivityMinimum, kMouseSensitivityMaximum, loaded.mouseSensitivity) ||
-            !readZoomFloat(L"SensitivityScalingStrength", 1.0f, 2.0f, loaded.sensitivityScalingStrength)) return false;
+            !readZoomFloat(L"SensitivityScalingStrength", 1.0f, 2.0f, loaded.sensitivityScalingStrength) ||
+            !readZoomFloat(L"CameraSmoothingStrength", 1.0f, 10.0f, loaded.cameraSmoothingStrength)) return false;
         if (ReadToolkitConfigValue(L"Zoom", L"TransitionDurationMs", value, configPath))
         {
             value = TrimWhitespace(value);
@@ -1140,13 +1150,17 @@ namespace
             std::wstring keyName;
             return !ReadToolkitConfigValue(L"Shortcuts", name, keyName, configPath) || ParseVirtualKey(keyName, target);
         };
-        if (ReadToolkitConfigValue(L"nametag", L"show_when_hud_hidden", value, configPath))
+        const auto readBoolean = [&](const wchar_t* section, const wchar_t* key, bool& target)
         {
+            if (!ReadToolkitConfigValue(section, key, value, configPath)) return true;
             value = TrimWhitespace(value);
-            if (_wcsicmp(value.c_str(), L"true") == 0) loaded.showNametagWhenHudHidden = true;
-            else if (_wcsicmp(value.c_str(), L"false") == 0) loaded.showNametagWhenHudHidden = false;
+            if (_wcsicmp(value.c_str(), L"true") == 0) target = true;
+            else if (_wcsicmp(value.c_str(), L"false") == 0) target = false;
             else return false;
-        }
+            return true;
+        };
+        if (!readBoolean(L"Zoom", L"CameraSmoothingEnabled", loaded.cameraSmoothingEnabled) ||
+            !readBoolean(L"nametag", L"show_when_hud_hidden", loaded.showNametagWhenHudHidden)) return false;
         if (ReadToolkitConfigValue(L"Compatibility", L"AllowUnsupportedGameVersion", value, configPath))
         {
             value = TrimWhitespace(value);
@@ -1805,6 +1819,115 @@ namespace
             IsZoomKeyDown() &&
             (GetAsyncKeyState(VK_ESCAPE) & 0x8000) == 0 && ModuleShortcutsAllowed(g_trackedGameWindow) &&
             !ShortcutNeedsRelease(g_zoomConfig.zoomKey);
+    }
+
+    class CameraTurnFilter
+    {
+    public:
+        void Reset() { active = false; }
+
+        zoom::TurnDelta Update(void* player, LONG session, zoom::TurnDelta delta, double nowMs, double strength)
+        {
+            const bool starting = !active || session != lastSession || player != lastPlayer;
+            if (starting) filter.Reset();
+            // The first callback has no interval from this stream. Use a nominal
+            // 120 Hz step and measure actual intervals on subsequent callbacks.
+            const double elapsed = starting ? 1.0 / 120.0 : (nowMs - lastTimeMs) / 1000.0;
+            active = true;
+            lastSession = session;
+            lastPlayer = player;
+            lastTimeMs = nowMs;
+            return filter.Update(delta, elapsed, strength);
+        }
+
+    private:
+        zoom::CameraRotationSmoothing filter;
+        bool active = false;
+        LONG lastSession = 0;
+        void* lastPlayer = nullptr;
+        double lastTimeMs = 0;
+    };
+
+    void __fastcall SmoothCameraTurn(void* player, const float* delta, unsigned int inputMode)
+    {
+        const LONG callbacks = InterlockedIncrement(&g_cameraCallbacks);
+        const auto original = reinterpret_cast<void(__fastcall*)(void*, const float*)>(
+            g_gameModuleBase + zoom::camera::kTargetRva);
+        float filtered[2]{};
+        if (callbacks == 1)
+        {
+            static CameraTurnFilter filter;
+            const auto window = static_cast<HWND>(InterlockedCompareExchangePointer(&g_cameraZoomWindow, nullptr, nullptr));
+            const LONG session = InterlockedCompareExchange(&g_cameraSession, 0, 0);
+            if (inputMode != zoom::camera::kMouseAndKeyboard || !window || !IsZoomKeyDown() ||
+                (GetAsyncKeyState(VK_ESCAPE) & 0x8000) || ShortcutNeedsRelease(g_zoomConfig.zoomKey) ||
+                !ModuleShortcutsAllowed(window))
+            {
+                filter.Reset();
+            }
+            else
+            {
+                const auto output = filter.Update(player, session, {delta[1], delta[0]},
+                    ZoomTimeMs(), g_zoomConfig.cameraSmoothingStrength);
+                filtered[0] = static_cast<float>(output.pitch);
+                filtered[1] = static_cast<float>(output.yaw);
+                delta = filtered;
+            }
+        }
+        original(player, delta);
+        InterlockedDecrement(&g_cameraCallbacks);
+    }
+
+    bool InstallCameraRotationHook()
+    {
+        if (!g_supportedBuild || !zoom::camera::Matches(g_gameModuleBase)) return false;
+        const uintptr_t site = g_gameModuleBase + zoom::camera::kCallRva;
+        g_cameraRelay = nametag::AllocateNear(site);
+        if (!g_cameraRelay) return false;
+        const auto relay = zoom::camera::Relay(reinterpret_cast<uintptr_t>(&SmoothCameraTurn));
+        std::memcpy(g_cameraRelay, relay.data(), relay.size());
+        DWORD previous = 0;
+        if (!VirtualProtect(g_cameraRelay, nametag::kDataOffset, PAGE_EXECUTE_READ, &previous) ||
+            !FlushInstructionCache(GetCurrentProcess(), g_cameraRelay, relay.size()) ||
+            !nametag::Jump(g_cameraPatch, site, zoom::camera::kCall, sizeof(zoom::camera::kCall),
+                reinterpret_cast<uintptr_t>(g_cameraRelay))) return false;
+        g_cameraPatch.replacement[0] = 0xE8;
+        nametag::FrozenThreads frozen;
+        return frozen.Freeze() && frozen.Outside(site, g_cameraPatch.size) &&
+            zoom::camera::Matches(g_gameModuleBase) && nametag::WritePatch(g_cameraPatch, true);
+    }
+
+    bool RestoreCameraRotationHook()
+    {
+        InterlockedExchangePointer(&g_cameraZoomWindow, nullptr);
+        if (!g_cameraRelay) return true;
+        nametag::FrozenThreads frozen;
+        if (!frozen.Freeze() || !frozen.Outside(g_cameraPatch.address, g_cameraPatch.size)) return false;
+        if (g_cameraPatch.installed && !nametag::WritePatch(g_cameraPatch, false)) return false;
+        if (g_cameraPatch.originalProtection && !nametag::Matches(g_cameraPatch.address,
+            g_cameraPatch.original.data(), g_cameraPatch.size)) return false;
+        if (g_cameraPatch.protectionPending)
+        {
+            DWORD previous = 0;
+            if (!VirtualProtect(reinterpret_cast<void*>(g_cameraPatch.address), g_cameraPatch.size,
+                g_cameraPatch.originalProtection, &previous)) return false;
+            g_cameraPatch.protectionPending = false;
+        }
+        if (g_cameraPatch.cachePending)
+        {
+            if (!FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(g_cameraPatch.address),
+                g_cameraPatch.size)) return false;
+            g_cameraPatch.cachePending = false;
+        }
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(g_module);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(reinterpret_cast<uintptr_t>(g_module) + dos->e_lfanew);
+        if (!frozen.Outside(reinterpret_cast<uintptr_t>(g_module), nt->OptionalHeader.SizeOfImage) ||
+            !frozen.Outside(reinterpret_cast<uintptr_t>(g_cameraRelay), nametag::kAllocationSize) ||
+            InterlockedCompareExchange(&g_cameraCallbacks, 0, 0) != 0 ||
+            !VirtualFree(g_cameraRelay, 0, MEM_RELEASE)) return false;
+        g_cameraRelay = nullptr;
+        g_cameraPatch = {};
+        return true;
     }
 
     void CaptureLegacyWheel(SHORT delta)
@@ -2862,6 +2985,7 @@ namespace
                 bool stateChanged = false;
                 if (keyUp) stateChanged = InterlockedExchange(&g_zoomKeyDown, 0) != 0;
                 if (keyDown) stateChanged = InterlockedExchange(&g_zoomKeyDown, 1) == 0;
+                if (stateChanged) InterlockedIncrement(&g_cameraSession);
                 if (stateChanged && gameActive)
                 {
                     LogZoomStatus(keyDown ? "zoom-key-down" : "zoom-key-up");
@@ -3367,6 +3491,18 @@ namespace
         MSG message{};
 
         g_trackedGameWindow = GetGameWindow();
+        const bool cameraRotationReady = g_zoomConfig.cameraSmoothingEnabled && InstallCameraRotationHook();
+        constexpr ULONGLONG cameraRollbackRetryMs = 100;
+        ULONGLONG nextCameraRollbackAt = 0;
+        if (g_zoomConfig.cameraSmoothingEnabled)
+        {
+            LogZoomStatus(cameraRotationReady ? "camera-rotation-hook-ready" : "camera-rotation-profile-unavailable");
+            if (!cameraRotationReady && g_cameraRelay && !RestoreCameraRotationHook())
+            {
+                LogZoomStatus("camera-rotation-rollback-pending");
+                nextCameraRollbackAt = GetTickCount64() + cameraRollbackRetryMs;
+            }
+        }
         if (g_supportedBuild)
         {
             g_zoomKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL,
@@ -3673,6 +3809,13 @@ namespace
                 }
             }
             // Process Zoom input and start its transition before optional hook maintenance.
+            if (!cameraRotationReady && g_cameraRelay && GetTickCount64() >= nextCameraRollbackAt)
+            {
+                if (RestoreCameraRotationHook())
+                    LogZoomStatus("camera-rotation-hook-restored");
+                else
+                    nextCameraRollbackAt = GetTickCount64() + cameraRollbackRetryMs;
+            }
             if (g_supportedBuild && !stopWhenRestored && !g_zoom.transitionActive &&
                 loopTime - lastRawApiHookScanAt >= 2'000)
             {
@@ -3707,6 +3850,16 @@ namespace
                 lastGameInputHookScanAt = loopTime;
             }
             g_fpsCounter.Publish(gameWindow, active && !stopWhenRestored, fpsFrameSourceReady);
+            if (cameraRotationReady)
+            {
+                const HWND eligible = active && !stopWhenRestored && g_zoom.active &&
+                    !g_zoom.restoring && !g_zoomRestorePending ? gameWindow : nullptr;
+                if (InterlockedCompareExchangePointer(&g_cameraZoomWindow, nullptr, nullptr) != eligible)
+                {
+                    InterlockedIncrement(&g_cameraSession);
+                    InterlockedExchangePointer(&g_cameraZoomWindow, eligible);
+                }
+            }
             UpdateZoomDiagnostics();
             WaitForWorkerInput(workerTimer, g_fovScan.result == FovScanResult::Running ||
                 (g_zoom.transitionActive && !g_zoomRestorePending) ? 1 : 16);
@@ -3736,12 +3889,13 @@ namespace
             }
             Sleep(16);
         }
+        const bool hadCameraRelay = g_cameraRelay != nullptr;
         bool inputRestorePendingLogged = false;
-        while (!RestoreNativeMouseWheelHooks())
+        while (!RestoreCameraRotationHook() || !RestoreNativeMouseWheelHooks())
         {
             if (!inputRestorePendingLogged)
             {
-                LogZoomStatus("native-mouse-wheel-restore-pending");
+                LogZoomStatus("native-input-restore-pending");
                 inputRestorePendingLogged = true;
             }
             SetOverlayMessage(L"Input hook restore pending; module remains loaded", RGB(255, 170, 110));
@@ -3754,6 +3908,7 @@ namespace
             }
             Sleep(16);
         }
+        if (hadCameraRelay) LogZoomStatus("camera-rotation-hook-restored");
         RestoreGameInputHooks();
         if (g_zoomKeyboardHook != nullptr)
         {

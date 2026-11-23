@@ -1,0 +1,47 @@
+#pragma once
+
+#include <cmath>
+
+namespace zoom
+{
+    struct TurnDelta
+    {
+        double yaw;
+        double pitch;
+    };
+
+    // One instance per active mouse-look stream. Reset at every gameplay interruption.
+    class CameraRotationSmoothing
+    {
+    public:
+        void Reset() { pending = {}; }
+
+        // Called on camera updates, including updates with zero input.
+        // elapsedSeconds is the monotonic interval since the previous update.
+        TurnDelta Update(TurnDelta input, double elapsedSeconds, double strength)
+        {
+            if (!std::isfinite(elapsedSeconds) || elapsedSeconds < 0 ||
+                !(strength >= 1 && strength <= 10) ||
+                !std::isfinite(input.yaw) || !std::isfinite(input.pitch))
+            {
+                Reset();
+                return input;
+            }
+
+            pending.yaw += input.yaw;
+            pending.pitch += input.pitch;
+            if (pending.yaw == 0 && pending.pitch == 0) return {};
+            // Strength 1 to 10 corresponds to a time constant of 4 to 40 ms.
+            // At two seconds even the longest time constant gives a fraction of 1
+            // at double precision. Bound the exponent for arbitrarily long frames.
+            const double fraction = -std::expm1(-std::fmin(elapsedSeconds, 2.0) / (0.004 * strength));
+            const TurnDelta output{pending.yaw * fraction, pending.pitch * fraction};
+            pending.yaw -= output.yaw;
+            pending.pitch -= output.pitch;
+            return output;
+        }
+
+    private:
+        TurnDelta pending{};
+    };
+}

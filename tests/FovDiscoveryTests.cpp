@@ -16,6 +16,13 @@ namespace
 
     void TestCameraRotationSmoothing()
     {
+        const auto relay = zoom::camera::Relay(0x0123456789ABCDEF);
+        const std::array<unsigned char, 15> expected{
+            0x41, 0x89, 0xD8, 0x48, 0xB8, 0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01, 0xFF, 0xE0
+        };
+        Check(relay == expected, "camera relay forwards EBX as the third argument and preserves the return address");
+        Check(!zoom::camera::Matches(0) && !zoom::camera::Matches(UINTPTR_MAX),
+            "invalid camera profile addresses are refused");
         for (const int fps : {60, 120, 144, 240})
         {
             zoom::CameraRotationSmoothing filter;

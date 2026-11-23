@@ -30,6 +30,7 @@ namespace zoom
 
             pending.yaw += input.yaw;
             pending.pitch += input.pitch;
+            if (pending.yaw == 0 && pending.pitch == 0) return {};
             // Strength 1 to 10 corresponds to a time constant of 4 to 40 ms.
             // At two seconds even the longest time constant gives a fraction of 1
             // at double precision. Bound the exponent for arbitrarily long frames.

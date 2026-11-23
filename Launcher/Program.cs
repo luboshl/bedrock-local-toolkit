@@ -55,7 +55,7 @@ internal static class Program
 
             if (zoomConfig.CameraSmoothingEnabled)
                 Console.WriteLine($"Camera rotation smoothing requested at strength {zoomConfig.CameraSmoothingStrength}. " +
-                    "Unavailable in this build of the toolkit: the native camera input profile is pending verification.");
+                    "See the Zoom log for camera profile verification.");
 
             var target = WaitForSupportedGame(TimeSpan.FromSeconds(90), zoomConfig.AllowUnsupportedGameVersion);
             Console.WriteLine($"Verified target: PID {target.ProcessId}, {target.PackageFullName}, x64.");

@@ -1821,6 +1821,33 @@ namespace
             !ShortcutNeedsRelease(g_zoomConfig.zoomKey);
     }
 
+    class CameraTurnFilter
+    {
+    public:
+        void Reset() { active = false; }
+
+        zoom::TurnDelta Update(void* player, LONG session, zoom::TurnDelta delta, double nowMs, double strength)
+        {
+            const bool starting = !active || session != lastSession || player != lastPlayer;
+            if (starting) filter.Reset();
+            // The first callback has no interval from this stream. Use a nominal
+            // 120 Hz step and measure actual intervals on subsequent callbacks.
+            const double elapsed = starting ? 1.0 / 120.0 : (nowMs - lastTimeMs) / 1000.0;
+            active = true;
+            lastSession = session;
+            lastPlayer = player;
+            lastTimeMs = nowMs;
+            return filter.Update(delta, elapsed, strength);
+        }
+
+    private:
+        zoom::CameraRotationSmoothing filter;
+        bool active = false;
+        LONG lastSession = 0;
+        void* lastPlayer = nullptr;
+        double lastTimeMs = 0;
+    };
+
     void __fastcall SmoothCameraTurn(void* player, const float* delta, unsigned int inputMode)
     {
         const LONG callbacks = InterlockedIncrement(&g_cameraCallbacks);
@@ -1829,10 +1856,7 @@ namespace
         float filtered[2]{};
         if (callbacks == 1)
         {
-            static zoom::CameraRotationSmoothing filter;
-            static LONG lastSession = 0;
-            static void* lastPlayer = nullptr;
-            static double lastTimeMs = 0;
+            static CameraTurnFilter filter;
             const auto window = static_cast<HWND>(InterlockedCompareExchangePointer(&g_cameraZoomWindow, nullptr, nullptr));
             const LONG session = InterlockedCompareExchange(&g_cameraSession, 0, 0);
             if (inputMode != zoom::camera::kMouseAndKeyboard || !window || !IsZoomKeyDown() ||
@@ -1840,26 +1864,14 @@ namespace
                 !ModuleShortcutsAllowed(window))
             {
                 filter.Reset();
-                lastPlayer = nullptr;
             }
             else
             {
-                const double now = ZoomTimeMs();
-                if (session != lastSession || player != lastPlayer)
-                {
-                    filter.Reset();
-                    lastSession = session;
-                    lastPlayer = player;
-                }
-                else
-                {
-                    const auto output = filter.Update({delta[1], delta[0]},
-                        (now - lastTimeMs) / 1000, g_zoomConfig.cameraSmoothingStrength);
-                    filtered[0] = static_cast<float>(output.pitch);
-                    filtered[1] = static_cast<float>(output.yaw);
-                    delta = filtered;
-                }
-                lastTimeMs = now;
+                const auto output = filter.Update(player, session, {delta[1], delta[0]},
+                    ZoomTimeMs(), g_zoomConfig.cameraSmoothingStrength);
+                filtered[0] = static_cast<float>(output.pitch);
+                filtered[1] = static_cast<float>(output.yaw);
+                delta = filtered;
             }
         }
         original(player, delta);
@@ -3480,8 +3492,17 @@ namespace
 
         g_trackedGameWindow = GetGameWindow();
         const bool cameraRotationReady = g_zoomConfig.cameraSmoothingEnabled && InstallCameraRotationHook();
+        constexpr ULONGLONG cameraRollbackRetryMs = 100;
+        ULONGLONG nextCameraRollbackAt = 0;
         if (g_zoomConfig.cameraSmoothingEnabled)
+        {
             LogZoomStatus(cameraRotationReady ? "camera-rotation-hook-ready" : "camera-rotation-profile-unavailable");
+            if (!cameraRotationReady && g_cameraRelay && !RestoreCameraRotationHook())
+            {
+                LogZoomStatus("camera-rotation-rollback-pending");
+                nextCameraRollbackAt = GetTickCount64() + cameraRollbackRetryMs;
+            }
+        }
         if (g_supportedBuild)
         {
             g_zoomKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL,
@@ -3788,6 +3809,13 @@ namespace
                 }
             }
             // Process Zoom input and start its transition before optional hook maintenance.
+            if (!cameraRotationReady && g_cameraRelay && GetTickCount64() >= nextCameraRollbackAt)
+            {
+                if (RestoreCameraRotationHook())
+                    LogZoomStatus("camera-rotation-hook-restored");
+                else
+                    nextCameraRollbackAt = GetTickCount64() + cameraRollbackRetryMs;
+            }
             if (g_supportedBuild && !stopWhenRestored && !g_zoom.transitionActive &&
                 loopTime - lastRawApiHookScanAt >= 2'000)
             {

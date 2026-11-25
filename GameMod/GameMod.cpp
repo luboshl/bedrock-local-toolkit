@@ -11,7 +11,9 @@
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
+#include <fstream>
 #include <iterator>
+#include <sstream>
 #include <intrin.h>
 #include <limits>
 #include <optional>
@@ -1068,6 +1070,48 @@ namespace
         return true;
     }
 
+    bool ReadUtf8BomConfig(const std::wstring& path, std::wstring& config)
+    {
+        std::ifstream file(path, std::ios::binary);
+        char bom[3]{};
+        if (!file.read(bom, sizeof(bom)) || std::memcmp(bom, "\xEF\xBB\xBF", sizeof(bom)) != 0)
+            return true;
+
+        const std::string bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        if (bytes.empty()) return true;
+        if (bytes.size() > INT_MAX) return false;
+        const int size = static_cast<int>(bytes.size());
+        const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), size, nullptr, 0);
+        if (length == 0) return false;
+        config.resize(length);
+        return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), size, config.data(), length) == length;
+    }
+
+    bool ReadDecodedConfigValue(const std::wstring& config, const wchar_t* section, const wchar_t* key,
+        std::wstring& value)
+    {
+        std::wistringstream stream(config);
+        bool inSection = false;
+        for (std::wstring line; std::getline(stream, line);)
+        {
+            line = TrimWhitespace(line);
+            if (line.empty() || line.front() == L';' || line.front() == L'#') continue;
+            if (line.front() == L'[' && line.back() == L']')
+            {
+                inSection = _wcsicmp(TrimWhitespace(line.substr(1, line.size() - 2)).c_str(), section) == 0;
+                continue;
+            }
+            const size_t separator = line.find(L'=');
+            if (inSection && separator != std::wstring::npos &&
+                _wcsicmp(TrimWhitespace(line.substr(0, separator)).c_str(), key) == 0)
+            {
+                value = TrimWhitespace(line.substr(separator + 1));
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool ParseVirtualKey(std::wstring value, int& key)
     {
         value = TrimWhitespace(value);
@@ -1140,6 +1184,13 @@ namespace
 
     bool LoadZoomConfigFromPath(const std::wstring& configPath)
     {
+        std::wstring decoded;
+        if (!ReadUtf8BomConfig(configPath, decoded)) return false;
+        const auto readValue = [&](const wchar_t* section, const wchar_t* key, std::wstring& value)
+        {
+            if (!decoded.empty()) return ReadDecodedConfigValue(decoded, section, key, value);
+            return ReadToolkitConfigValue(section, key, value, configPath);
+        };
         ZoomConfig loaded;
         std::wstring value;
         const auto parseFloat = [](const std::wstring& value, float minimum, float maximum, float& target)
@@ -1152,21 +1203,21 @@ namespace
             target = parsed;
             return true;
         };
-        if (ReadToolkitConfigValue(L"Zoom", L"Fov", value, configPath))
+        if (readValue(L"Zoom", L"Fov", value))
         {
             if (!parseFloat(value, kZoomMinimumFov, kZoomMaximumFov, loaded.firstPersonFov)) return false;
             loaded.thirdPersonFov = loaded.firstPersonFov;
         }
         const auto readZoomFloat = [&](const wchar_t* key, float minimum, float maximum, float& target)
         {
-            return !ReadToolkitConfigValue(L"Zoom", key, value, configPath) || parseFloat(value, minimum, maximum, target);
+            return !readValue(L"Zoom", key, value) || parseFloat(value, minimum, maximum, target);
         };
         if (!readZoomFloat(L"FirstPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.firstPersonFov) ||
             !readZoomFloat(L"ThirdPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.thirdPersonFov) ||
             !readZoomFloat(L"MouseSensitivity", kMouseSensitivityMinimum, kMouseSensitivityMaximum, loaded.mouseSensitivity) ||
             !readZoomFloat(L"SensitivityScalingStrength", 1.0f, 2.0f, loaded.sensitivityScalingStrength) ||
             !readZoomFloat(L"CameraSmoothingStrength", 1.0f, 10.0f, loaded.cameraSmoothingStrength)) return false;
-        if (ReadToolkitConfigValue(L"Zoom", L"TransitionDurationMs", value, configPath))
+        if (readValue(L"Zoom", L"TransitionDurationMs", value))
         {
             value = TrimWhitespace(value);
             wchar_t* end = nullptr;
@@ -1176,14 +1227,14 @@ namespace
                 return false;
             loaded.transitionDurationMs = parsed;
         }
-        const auto readKey = [&configPath](const wchar_t* name, int& target)
+        const auto readKey = [&readValue](const wchar_t* name, int& target)
         {
             std::wstring keyName;
-            return !ReadToolkitConfigValue(L"Shortcuts", name, keyName, configPath) || ParseVirtualKey(keyName, target);
+            return !readValue(L"Shortcuts", name, keyName) || ParseVirtualKey(keyName, target);
         };
         const auto readBoolean = [&](const wchar_t* section, const wchar_t* key, bool& target)
         {
-            if (!ReadToolkitConfigValue(section, key, value, configPath)) return true;
+            if (!readValue(section, key, value)) return true;
             value = TrimWhitespace(value);
             if (_wcsicmp(value.c_str(), L"true") == 0) target = true;
             else if (_wcsicmp(value.c_str(), L"false") == 0) target = false;
@@ -1192,7 +1243,7 @@ namespace
         };
         if (!readBoolean(L"Zoom", L"CameraSmoothingEnabled", loaded.cameraSmoothingEnabled) ||
             !readBoolean(L"nametag", L"show_when_hud_hidden", loaded.showNametagWhenHudHidden)) return false;
-        if (ReadToolkitConfigValue(L"Compatibility", L"AllowUnsupportedGameVersion", value, configPath))
+        if (readValue(L"Compatibility", L"AllowUnsupportedGameVersion", value))
         {
             value = TrimWhitespace(value);
             if (_wcsicmp(value.c_str(), L"true") == 0) loaded.allowUnsupportedGameVersion = true;

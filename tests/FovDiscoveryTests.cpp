@@ -222,6 +222,17 @@ namespace
         Check(!g_zoomConfig.allowUnsupportedGameVersion, "unsupported game version is refused by default");
         Check(!g_zoomConfig.cameraSmoothingEnabled && g_zoomConfig.cameraSmoothingStrength == 5,
             "existing configurations keep camera rotation smoothing disabled");
+        {
+            TemporaryToolkitConfig utf8Config;
+            std::ofstream file(utf8Config.Path(), std::ios::binary);
+            file << "\xEF\xBB\xBF" "[Zoom]\r\nFirstPersonFov=15.5\r\nThirdPersonFov=28.5\r\n"
+                "MouseSensitivity=12\r\nSensitivityScalingStrength=2\r\n[Shortcuts]\r\nZoom=C\r\n";
+            file.close();
+            Check(file.good() && LoadZoomConfigFromPath(utf8Config.Path()) &&
+                g_zoomConfig.firstPersonFov == 15.5f && g_zoomConfig.thirdPersonFov == 28.5f &&
+                g_zoomConfig.mouseSensitivity == 12.0f && g_zoomConfig.sensitivityScalingStrength == 2.0f &&
+                g_zoomConfig.zoomKey == 'C', "load Zoom settings when the first section follows a UTF-8 BOM");
+        }
         config.Set(L"Zoom", L"CameraSmoothingEnabled", L" TrUe ");
         config.Set(L"Zoom", L"CameraSmoothingStrength", L"7.25");
         Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.cameraSmoothingEnabled &&

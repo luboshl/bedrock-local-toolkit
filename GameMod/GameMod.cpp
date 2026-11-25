@@ -51,6 +51,7 @@ namespace
     constexpr float kMouseSensitivityRuntimeMaximum = 1.0f;
     constexpr float kMouseSensitivityPercentScale = 0.01f;
     constexpr ULONGLONG kDefaultZoomTransitionDurationMs = 75;
+    constexpr double kFovHalfAngleRadians = 0.0087266462599716478846;
 
     double ZoomTimeMs()
     {
@@ -75,13 +76,9 @@ namespace
             MsgWaitForMultipleObjectsEx(0, nullptr, delayMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 
-    float InterpolateZoomFov(float startValue, float targetValue, double elapsedMs, double durationMs)
+    double LogFovProjection(float fov)
     {
-        if (durationMs == 0 || elapsedMs >= durationMs) return targetValue;
-
-        const float progress = static_cast<float>(elapsedMs) / static_cast<float>(durationMs);
-        const float eased = progress * progress * (3.0f - 2.0f * progress);
-        return startValue + (targetValue - startValue) * eased;
+        return std::log(std::tan(fov * kFovHalfAngleRadians));
     }
 
     float GetZoomMouseSensitivityValue(float normalSensitivity, float targetSensitivityPercent,
@@ -92,12 +89,11 @@ namespace
             normalFov <= kZoomMinimumFov)
             return normalSensitivity;
 
-        constexpr double kDegreesToRadians = 0.017453292519943295769;
         const double minimumFov = kZoomMinimumFov;
         const double boundedNormalFov = std::clamp(static_cast<double>(normalFov), minimumFov, 120.0);
         const double boundedCurrentFov = std::clamp(static_cast<double>(currentFov), minimumFov, boundedNormalFov);
-        const double normalHalfAngle = boundedNormalFov * kDegreesToRadians * 0.5;
-        const double currentHalfAngle = boundedCurrentFov * kDegreesToRadians * 0.5;
+        const double normalHalfAngle = boundedNormalFov * kFovHalfAngleRadians;
+        const double currentHalfAngle = boundedCurrentFov * kFovHalfAngleRadians;
         const double normalProjectionScale = std::tan(normalHalfAngle);
         if (!std::isfinite(normalProjectionScale) || normalProjectionScale <= 0.0)
             return normalSensitivity;
@@ -187,10 +183,49 @@ namespace
         float displayedValue = 0.0f;
         float transitionStartValue = 0.0f;
         float transitionTargetValue = 0.0f;
+        double transitionStartProjection = 0.0;
+        double transitionTargetProjection = 0.0;
+        double transitionReferenceDistance = 0.0;
         double transitionStartedAt = 0;
+        double transitionDurationMs = 0;
         bool transitionActive = false;
         bool restoring = false;
     };
+
+    void StartZoomTransition(FovZoomState& zoom, float target, double startedAt, bool restoring = false)
+    {
+        zoom.transitionStartValue = zoom.displayedValue;
+        zoom.transitionTargetValue = target;
+        zoom.transitionStartProjection = LogFovProjection(zoom.displayedValue);
+        zoom.transitionTargetProjection = LogFovProjection(target);
+        const double distance = std::abs(zoom.transitionTargetProjection - zoom.transitionStartProjection);
+        // Give every visible step at least the configured time and extend larger moves
+        // in proportion to the change in magnification.
+        zoom.transitionDurationMs = distance == 0 ? 0 : static_cast<double>(g_zoomConfig.transitionDurationMs) *
+            (std::max)(1.0, distance / zoom.transitionReferenceDistance);
+        zoom.transitionStartedAt = startedAt;
+        zoom.transitionActive = true;
+        zoom.restoring = restoring;
+    }
+
+    double ZoomTransitionReferenceDistance(float normalFov, float zoomFov)
+    {
+        // A tiny difference between normal and configured FOV must not turn
+        // later wheel steps into arbitrarily long transitions.
+        return (std::max)(std::log(2.0), std::abs(LogFovProjection(normalFov) - LogFovProjection(zoomFov)));
+    }
+
+    float InterpolateZoomFov(const FovZoomState& zoom, double elapsedMs)
+    {
+        if (elapsedMs >= zoom.transitionDurationMs) return zoom.transitionTargetValue;
+        if (elapsedMs <= 0) return zoom.transitionStartValue;
+
+        const double progress = elapsedMs / zoom.transitionDurationMs;
+        const double eased = progress * progress * (3.0 - 2.0 * progress);
+        const double projection = zoom.transitionStartProjection +
+            (zoom.transitionTargetProjection - zoom.transitionStartProjection) * eased;
+        return static_cast<float>(std::atan(std::exp(projection)) / kFovHalfAngleRadians);
+    }
 
     bool ScheduleZoomWheelTransition(FovZoomState& zoom, LONG steps, double startedAt)
     {
@@ -199,11 +234,7 @@ namespace
         if (std::fabs(nextValue - zoom.transitionTargetValue) < kFovMatchTolerance) return false;
 
         zoom.currentZoomValue = nextValue;
-        zoom.transitionStartValue = zoom.displayedValue;
-        zoom.transitionTargetValue = nextValue;
-        zoom.transitionStartedAt = startedAt;
-        zoom.transitionActive = true;
-        zoom.restoring = false;
+        StartZoomTransition(zoom, nextValue, startedAt);
         return true;
     }
 
@@ -1646,11 +1677,8 @@ namespace
             if (g_zoom.restoring && fov::SameTarget(target, g_zoom.target) &&
                 SameFloatBits(values[0], kZoomMinimumFov) && SameFloatBits(values[2], g_zoom.displayedValue))
             {
-                g_zoom.restoring = false;
                 g_zoom.currentZoomValue = zoomFov;
-                g_zoom.transitionStartValue = g_zoom.displayedValue;
-                g_zoom.transitionTargetValue = zoomFov;
-                g_zoom.transitionStartedAt = ZoomTimeMs();
+                StartZoomTransition(g_zoom, zoomFov, ZoomTimeMs());
                 LogZoomStatus("zoom-restarted-during-restore");
                 FinishReleasedZoomPress(releasedAfterMs);
             }
@@ -1677,8 +1705,7 @@ namespace
         g_zoom.originalValue = values[2];
         g_zoom.currentZoomValue = zoomFov;
         g_zoom.displayedValue = values[2];
-        g_zoom.transitionStartValue = values[2];
-        g_zoom.transitionTargetValue = zoomFov;
+        g_zoom.transitionReferenceDistance = ZoomTransitionReferenceDistance(values[2], zoomFov);
         g_zoom.transitionActive = true;
         g_zoom.restoring = false;
         g_zoom.active = true;
@@ -1707,7 +1734,7 @@ namespace
             // Start the configured animation only after the guarded setup writes
             // have succeeded. Time spent validating the target must not consume
             // the transition before the worker can advance it.
-            g_zoom.transitionStartedAt = ZoomTimeMs();
+            StartZoomTransition(g_zoom, zoomFov, ZoomTimeMs());
             LogZoomStatus("zoom-started");
             SetOverlayMessage(g_zoomSensitivity.active ?
                 L"Zooming; mouse sensitivity adjusted, release Zoom key to restore" :
@@ -3010,21 +3037,16 @@ namespace
     void BeginZoomRestoreTransition()
     {
         if (!g_zoom.active || g_zoom.restoring || g_zoomRestorePending) return;
-        g_zoom.transitionStartValue = g_zoom.displayedValue;
-        g_zoom.transitionTargetValue = g_zoom.originalValue;
-        g_zoom.transitionStartedAt = ZoomTimeMs();
-        g_zoom.transitionActive = true;
-        g_zoom.restoring = true;
+        StartZoomTransition(g_zoom, g_zoom.originalValue, ZoomTimeMs(), true);
     }
 
     void AdvanceZoomTransition(double now = ZoomTimeMs())
     {
         if (!g_zoom.active || !g_zoom.transitionActive || g_zoomRestorePending) return;
 
-        const float nextValue = InterpolateZoomFov(g_zoom.transitionStartValue,
-            g_zoom.transitionTargetValue, now - g_zoom.transitionStartedAt,
-            static_cast<double>(g_zoomConfig.transitionDurationMs));
-        const bool complete = now - g_zoom.transitionStartedAt >= g_zoomConfig.transitionDurationMs;
+        const double elapsedMs = now - g_zoom.transitionStartedAt;
+        const float nextValue = InterpolateZoomFov(g_zoom, elapsedMs);
+        const bool complete = elapsedMs >= g_zoom.transitionDurationMs;
         if (nextValue != g_zoom.displayedValue)
         {
             const uintptr_t valueAddress = g_zoom.target.pattern + sizeof(float) * 2;

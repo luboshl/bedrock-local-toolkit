@@ -611,20 +611,39 @@ namespace
 
     void TestZoomTransitionInterpolation()
     {
-        Check(InterpolateZoomFov(70.0f, 10.0f, 0, 50) == 70.0f,
-            "zoom transition begins at its starting FOV");
-        Check(std::fabs(InterpolateZoomFov(70.0f, 10.0f, 10, 40) - 60.625f) < 0.001f,
-            "zoom transition eases in");
-        Check(std::fabs(InterpolateZoomFov(70.0f, 10.0f, 20, 40) - 40.0f) < 0.001f,
-            "zoom transition reaches the midpoint");
-        Check(std::fabs(InterpolateZoomFov(70.0f, 10.0f, 30, 40) - 19.375f) < 0.001f,
-            "zoom transition eases out");
-        Check(InterpolateZoomFov(70.0f, 10.0f, 50, 50) == 10.0f &&
-            InterpolateZoomFov(70.0f, 10.0f, 10'000, 10'000) == 10.0f,
-            "zoom transition reaches its target for different durations");
-        Check(InterpolateZoomFov(70.0f, 10.0f, 2'500, 10'000) ==
-            InterpolateZoomFov(70.0f, 10.0f, 10, 40),
-            "zoom easing is independent of the configured duration");
+        const auto originalDuration = g_zoomConfig.transitionDurationMs;
+        FovZoomState zoom;
+        zoom.displayedValue = 70.0f;
+        zoom.transitionReferenceDistance = ZoomTransitionReferenceDistance(70.0f, 25.0f);
+        g_zoomConfig.transitionDurationMs = 75;
+        StartZoomTransition(zoom, 25.0f, 0);
+        Check(zoom.transitionDurationMs == 75 && InterpolateZoomFov(zoom, 0) == 70.0f &&
+            InterpolateZoomFov(zoom, 75) == 25.0f, "regular Zoom takes the configured time");
+
+        for (const auto& [timeFraction, eased] : {std::pair{0.25, 0.15625}, {0.5, 0.5}, {0.75, 0.84375}})
+        {
+            const double start = LogFovProjection(70.0f);
+            const double target = LogFovProjection(25.0f);
+            const double sample = LogFovProjection(InterpolateZoomFov(zoom, timeFraction * 75.0));
+            Check(std::abs((sample - start) / (target - start) - eased) < 0.000001,
+                "smoothstep eases the relative change in magnification");
+        }
+
+        const float quarter = InterpolateZoomFov(zoom, 18.75);
+        g_zoomConfig.transitionDurationMs = 125;
+        StartZoomTransition(zoom, 25.0f, 0);
+        Check(zoom.transitionDurationMs == 125 && InterpolateZoomFov(zoom, 31.25) == quarter,
+            "Zoom follows the same path at the longer configured duration");
+
+        zoom.displayedValue = 25.0f;
+        zoom.transitionReferenceDistance = ZoomTransitionReferenceDistance(25.0f, 25.0f);
+        StartZoomTransition(zoom, 25.0f, 0);
+        Check(zoom.transitionDurationMs == 0 && InterpolateZoomFov(zoom, 0) == 25.0f,
+            "identical FOV endpoints complete immediately");
+        zoom.currentZoomValue = 25.0f;
+        Check(ScheduleZoomWheelTransition(zoom, 1, 0) && zoom.transitionDurationMs == 125,
+            "a matching preset still allows a wheel transition at the configured duration");
+        g_zoomConfig.transitionDurationMs = originalDuration;
     }
 
     void TestZoomMouseSensitivityInterpolation()
@@ -1291,14 +1310,12 @@ namespace
         g_zoom.originalMinimumValue = kZoomMinimumFov;
         g_zoom.currentZoomValue = 45.0f;
         g_zoom.displayedValue = 50.0f;
-        g_zoom.transitionStartValue = 70.0f;
-        g_zoom.transitionTargetValue = 45.0f;
-        g_zoom.transitionStartedAt = ZoomTimeMs() - 25;
-        g_zoom.transitionActive = true;
+        g_zoom.transitionReferenceDistance = ZoomTransitionReferenceDistance(70.0f, 45.0f);
         g_zoomConfig.transitionDurationMs = 100;
         g_zoomRestorePending = false;
+        StartZoomTransition(g_zoom, 45.0f, 1000.0);
 
-        Check(ScheduleZoomWheelTransition(g_zoom, 1, ZoomTimeMs()),
+        Check(ScheduleZoomWheelTransition(g_zoom, 1, 1025.0),
             "wheel step schedules a new transition");
         Check(g_zoom.displayedValue == 50.0f && fixture.Value() == 50.0f,
             "wheel step leaves the displayed FOV unchanged immediately");
@@ -1306,19 +1323,69 @@ namespace
             g_zoom.transitionStartValue == 50.0f,
             "wheel step retargets the active transition from the displayed FOV");
 
-        g_zoom.transitionStartedAt = ZoomTimeMs() - 50;
-        AdvanceZoomTransition();
+        AdvanceZoomTransition(1075.0);
         Check(fixture.Value() > 40.0f && fixture.Value() < 50.0f,
             "retargeted transition advances toward its new target");
 
-        g_zoom.transitionStartedAt = ZoomTimeMs() - g_zoomConfig.transitionDurationMs;
-        AdvanceZoomTransition();
+        AdvanceZoomTransition(1125.0);
         Check(fixture.Value() == 40.0f && g_zoom.currentZoomValue == 40.0f &&
             !g_zoom.transitionActive,
             "retargeted transition reaches and records its new target");
         g_zoom = {};
         g_zoomConfig.transitionDurationMs = originalDuration;
         g_zoomRestorePending = false;
+    }
+
+    void TestDeepZoomTransitionTiming()
+    {
+        Fixture fixture;
+        const auto originalDuration = g_zoomConfig.transitionDurationMs;
+        g_zoom = {};
+        g_zoom.target = fixture.target;
+        g_zoom.active = true;
+        g_zoom.originalValue = 70.0f;
+        g_zoom.originalMinimumValue = 30.0f;
+        g_zoom.transitionReferenceDistance = ZoomTransitionReferenceDistance(70.0f, 25.0f);
+        g_zoomRestorePending = false;
+        Check(CompareExchangeFloat(fixture.target.pattern, 30.0f, kZoomMinimumFov),
+            "model the temporary FOV floor for deep Zoom");
+
+        g_zoom.displayedValue = 25.0f;
+        g_zoom.currentZoomValue = 25.0f;
+        g_zoomConfig.transitionDurationMs = 75;
+        Check(ScheduleZoomWheelTransition(g_zoom, 1, 1000.0) && g_zoom.transitionDurationMs == 75,
+            "a shallow wheel step receives the full configured time");
+
+        fixture.Value(6.0f);
+        g_zoom.displayedValue = 6.0f;
+        g_zoom.currentZoomValue = 6.0f;
+        Check(ScheduleZoomWheelTransition(g_zoom, 1, 1000.0) && g_zoom.transitionDurationMs > 75,
+            "the same five-degree step at deep Zoom takes more time");
+        const double shortWheelDuration = g_zoom.transitionDurationMs;
+        g_zoomConfig.transitionDurationMs = 125;
+        ScheduleZoomWheelTransition(g_zoom, -1, 1000.0);
+        Check(ScheduleZoomWheelTransition(g_zoom, 1, 1000.0) &&
+            std::abs(g_zoom.transitionDurationMs / shortWheelDuration - 125.0 / 75.0) < 1e-12,
+            "deep wheel timing scales with the configured duration");
+        AdvanceZoomTransition(1125.0);
+        Check(g_zoom.transitionActive && fixture.Value() > 1.0f && fixture.Value() < 6.0f,
+            "deep wheel easing continues past the regular Zoom duration");
+        AdvanceZoomTransition(1001.0 + g_zoom.transitionDurationMs);
+        Check(fixture.Value() == 1.0f && !g_zoom.transitionActive, "deep wheel easing reaches the requested FOV");
+
+        BeginZoomRestoreTransition();
+        const double restoreStartedAt = g_zoom.transitionStartedAt;
+        const double restoreDuration = g_zoom.transitionDurationMs;
+        Check(g_zoom.transitionStartValue == 1.0f && restoreDuration > 125.0,
+            "releasing deep Zoom starts a longer transition from the displayed FOV");
+        AdvanceZoomTransition(restoreStartedAt + 125.0);
+        Check(g_zoom.restoring && fixture.Value() > 1.0f && fixture.Value() < 70.0f,
+            "restoration advances smoothly beyond the regular Zoom duration");
+        AdvanceZoomTransition(restoreStartedAt + restoreDuration + 1.0);
+        float restoredValues[5]{};
+        Check(ReadFovPattern(fixture.target.pattern, restoredValues) && restoredValues[0] == 30.0f &&
+            restoredValues[2] == 70.0f && !g_zoom.active, "restoration returns the original FOV and slider floor");
+        g_zoomConfig.transitionDurationMs = originalDuration;
     }
 
     void TestZoomTransitionTiming()
@@ -1330,18 +1397,17 @@ namespace
         g_zoom.target = fixture.target;
         g_zoom.active = true;
         g_zoom.displayedValue = 70.0f;
-        g_zoom.transitionStartValue = 70.0f;
-        g_zoom.transitionTargetValue = 15.0f;
-        g_zoom.transitionStartedAt = 1000.0;
-        g_zoom.transitionActive = true;
+        g_zoom.transitionReferenceDistance = ZoomTransitionReferenceDistance(70.0f, 15.0f);
         g_zoomRestorePending = false;
+        StartZoomTransition(g_zoom, 15.0f, 1000.0);
         AdvanceZoomTransition(1000.5);
         const float first = fixture.Value();
         AdvanceZoomTransition(1001.0);
         Check(first < 70.0f && fixture.Value() < first,
             "sub-millisecond samples advance instead of sharing a coarse clock tick");
         AdvanceZoomTransition(1090.0);
-        Check(std::fabs(fixture.Value() - 42.5f) < .001f,
+        Check(std::abs(LogFovProjection(fixture.Value()) -
+            (LogFovProjection(70.0f) + LogFovProjection(15.0f)) * 0.5) < 0.000001,
             "delayed worker updates preserve elapsed-time easing");
         AdvanceZoomTransition(1180.0);
         Check(fixture.Value() == 15.0f && !g_zoom.transitionActive,
@@ -1349,19 +1415,14 @@ namespace
 
         fixture.Value(15.0f);
         g_zoom.displayedValue = 15.0f;
-        g_zoom.transitionStartValue = 15.0f;
-        g_zoom.transitionTargetValue = 15.0005f;
-        g_zoom.transitionStartedAt = 2000.0;
-        g_zoom.transitionActive = true;
+        StartZoomTransition(g_zoom, 15.0005f, 2000.0);
         AdvanceZoomTransition(2180.0);
         Check(fixture.Value() == g_zoom.displayedValue && fixture.Value() == 15.0005f,
             "small final steps still commit the exact target used by future CAS writes");
 
         fixture.Value(65.0f);
         g_zoom.displayedValue = 15.0005f;
-        g_zoom.transitionStartValue = 15.0005f;
-        g_zoom.transitionTargetValue = 20.0f;
-        g_zoom.transitionActive = true;
+        StartZoomTransition(g_zoom, 20.0f, 2000.0);
         AdvanceZoomTransition(2090.0);
         Check(fixture.Value() == 65.0f && g_zoomRestorePending,
             "transition still preserves a setting changed by another writer");
@@ -1394,13 +1455,13 @@ namespace
         g_zoom.originalMinimumValue = 30.0f;
         g_zoom.active = true;
         g_zoom.displayedValue = 70.0f;
-        g_zoom.transitionStartValue = 70.0f;
-        g_zoom.transitionTargetValue = 30.0f;
-        g_zoom.transitionStartedAt = 2000.0;
-        g_zoom.transitionActive = true;
+        g_zoom.transitionReferenceDistance = ZoomTransitionReferenceDistance(70.0f, 30.0f);
         g_zoomRestorePending = false;
+        StartZoomTransition(g_zoom, 30.0f, 2000.0);
+        const float expectedTapFov = InterpolateZoomFov(g_zoom, 20.0);
         FinishReleasedZoomPress(press.releasedAfterMs);
-        Check(fixture.Value() == 63.75f && g_zoom.restoring && g_zoom.transitionStartValue == 63.75f,
+        Check(fixture.Value() == expectedTapFov && g_zoom.restoring &&
+            g_zoom.transitionStartValue == expectedTapFov,
             "the queued tap applies its portion of Zoom easing and immediately starts restoration");
         AdvanceZoomTransition(g_zoom.transitionStartedAt + 80.0);
         Check(fixture.Value() == 70.0f && !g_zoom.active, "the queued tap returns to the original FOV");
@@ -1458,6 +1519,7 @@ int main()
         TestWorkerWaitMessages();
         TestOverlayVisibilityPositionFlags();
         TestZoomWheelTransitionRetargeting();
+        TestDeepZoomTransitionTiming();
         {
             // Exercise the game's message path without installing any desktop
             // hook or injecting input into the user's applications.

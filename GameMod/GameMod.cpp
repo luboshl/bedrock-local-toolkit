@@ -251,6 +251,7 @@ namespace
         uintptr_t optionsSlotAddress = 0;
         bool bindingLost = false;
         bool targetInvalidated = false;
+        uintptr_t wrapper = 0;
     };
 
     struct FovPointerConfig
@@ -600,8 +601,57 @@ namespace
         return true;
     }
 
+    bool ReadMouseSensitivityEntry(uintptr_t wrapper, uintptr_t& address, float& value)
+    {
+        // The named option stores one float per input mode in a circular list.
+        constexpr uintptr_t kListOffset = 0x20;
+        constexpr uintptr_t kValueOffset = 0x14;
+        constexpr uint32_t kMouseMode = 1;
+        struct Entry
+        {
+            uintptr_t next;
+            uintptr_t previous;
+            uint32_t mode;
+            float value;
+        };
+        static_assert(offsetof(Entry, value) == kValueOffset);
+        uintptr_t list[2]{};
+        if (wrapper > (std::numeric_limits<uintptr_t>::max)() - kListOffset ||
+            !ReadPrivateMemory(wrapper + kListOffset, list, sizeof(list)) ||
+            list[0] == 0 || list[0] % alignof(Entry) != 0 || list[1] == 0 || list[1] > 16)
+            return false;
+
+        uintptr_t links[2]{};
+        if (!ReadPrivateMemory(list[0], links, sizeof(links))) return false;
+        uintptr_t previous = list[0];
+        uintptr_t node = links[0];
+        uintptr_t match = 0;
+        float matchedValue = 0.0f;
+        for (uintptr_t i = 0; i < list[1]; ++i)
+        {
+            Entry entry{};
+            if (node == 0 || node == list[0] || node % alignof(Entry) != 0 ||
+                !ReadPrivateMemory(node, &entry, sizeof(entry)) || entry.previous != previous)
+                return false;
+            if (entry.mode == kMouseMode)
+            {
+                if (match != 0 || !std::isfinite(entry.value) ||
+                    entry.value < kMouseSensitivityRuntimeMinimum || entry.value > kMouseSensitivityRuntimeMaximum)
+                    return false;
+                match = node + kValueOffset;
+                matchedValue = entry.value;
+            }
+            previous = node;
+            node = entry.next;
+        }
+        if (node != list[0] || previous != links[1] || match == 0) return false;
+        address = match;
+        value = matchedValue;
+        return true;
+    }
+
     bool ReadVerifiedMouseSensitivity(uintptr_t options, uintptr_t& owner, uintptr_t& valueAddress,
-        uintptr_t& optionsSlotAddress, float& value)
+        uintptr_t& optionsSlotAddress, float& value, uintptr_t* wrapperAddress = nullptr)
     {
         if (!g_supportedBuild || options == 0 || (options & 7) != 0 ||
             options > (std::numeric_limits<uintptr_t>::max)() - fov::kOptionsSearchBytes)
@@ -616,6 +666,7 @@ namespace
         // object independently of the current FOV target.
         unsigned int matches = 0;
         uintptr_t foundOwner = 0;
+        uintptr_t foundWrapper = 0;
         uintptr_t foundAddress = 0;
         uintptr_t foundSlotAddress = 0;
         float foundValue = 0.0f;
@@ -650,19 +701,16 @@ namespace
                 !MatchOptionString(header[1] + fov::kCaptionOffset, "options.sensitivity", sizeof("options.sensitivity") - 1))
                 continue;
 
-            float values[4]{};
-            if (!ReadPrivateMemory(wrapper + fov::kPatternOffset, values, sizeof(values)) ||
-                !std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2]) ||
-                std::fabs(values[0] - 0.0f) >= kFovMatchTolerance ||
-                std::fabs(values[1] - 1.0f) >= kFovMatchTolerance ||
-                values[2] < kMouseSensitivityRuntimeMinimum || values[2] > kMouseSensitivityRuntimeMaximum)
-                continue;
+            uintptr_t address = 0;
+            float optionValue = 0.0f;
+            if (!ReadMouseSensitivityEntry(wrapper, address, optionValue)) return false;
 
             ++matches;
             foundOwner = header[1];
-            foundAddress = wrapper + fov::kPatternOffset + 2 * sizeof(float);
+            foundWrapper = wrapper;
+            foundAddress = address;
             foundSlotAddress = options + offset;
-            foundValue = values[2];
+            foundValue = optionValue;
         }
 
         if (matches != 1) return false;
@@ -670,6 +718,7 @@ namespace
         valueAddress = foundAddress;
         optionsSlotAddress = foundSlotAddress;
         value = foundValue;
+        if (wrapperAddress) *wrapperAddress = foundWrapper;
         return true;
     }
 
@@ -829,9 +878,9 @@ namespace
 
     TrackedSensitivityValidation ReadTrackedZoomMouseSensitivityWrapper(float& value)
     {
-        if (!g_zoomSensitivity.active || g_zoomSensitivity.valueAddress <
-            fov::kPatternOffset + 2 * sizeof(float)) return TrackedSensitivityValidation::Invalidated;
-        const uintptr_t wrapper = g_zoomSensitivity.valueAddress - fov::kPatternOffset - 2 * sizeof(float);
+        if (!g_zoomSensitivity.active || g_zoomSensitivity.wrapper == 0)
+            return TrackedSensitivityValidation::Invalidated;
+        const uintptr_t wrapper = g_zoomSensitivity.wrapper;
 
         MEMORY_BASIC_INFORMATION memory{};
         if (VirtualQuery(reinterpret_cast<const void*>(wrapper), &memory, sizeof(memory)) == 0 ||
@@ -853,15 +902,11 @@ namespace
             !MatchOptionString(header[1] + fov::kCaptionOffset, "options.sensitivity", sizeof("options.sensitivity") - 1))
             return TrackedSensitivityValidation::RetryableFailure;
 
-        float values[4]{};
-        if (!ReadPrivateMemory(wrapper + fov::kPatternOffset, values, sizeof(values)))
+        uintptr_t address = 0;
+        if (!ReadMouseSensitivityEntry(wrapper, address, value))
             return TrackedSensitivityValidation::RetryableFailure;
-        if (!std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2]) ||
-            std::fabs(values[0] - 0.0f) >= kFovMatchTolerance ||
-            std::fabs(values[1] - 1.0f) >= kFovMatchTolerance ||
-            values[2] < kMouseSensitivityRuntimeMinimum || values[2] > kMouseSensitivityRuntimeMaximum)
+        if (address != g_zoomSensitivity.valueAddress)
             return TrackedSensitivityValidation::Invalidated;
-        value = values[2];
         return TrackedSensitivityValidation::Valid;
     }
 
@@ -874,7 +919,7 @@ namespace
                 fov::kOptionsSearchBytes ||
             g_zoomSensitivity.optionsSlotAddress >= g_zoomSensitivity.target.options + fov::kOptionsSearchBytes ||
             g_zoomSensitivity.optionsSlotAddress % alignof(uintptr_t) != 0 ||
-            g_zoomSensitivity.valueAddress < fov::kPatternOffset + 2 * sizeof(float))
+            g_zoomSensitivity.wrapper == 0)
             return TrackedSensitivityValidation::Invalidated;
 
         uintptr_t optionsVtable = 0;
@@ -884,8 +929,7 @@ namespace
             !ReadPrivateMemory(g_zoomSensitivity.optionsSlotAddress, &wrapper, sizeof(wrapper)))
             return TrackedSensitivityValidation::RetryableFailure;
 
-        const uintptr_t trackedWrapper = g_zoomSensitivity.valueAddress - fov::kPatternOffset - 2 * sizeof(float);
-        if (wrapper != trackedWrapper)
+        if (wrapper != g_zoomSensitivity.wrapper)
         {
             g_zoomSensitivity.bindingLost = true;
             return TrackedSensitivityValidation::Invalidated;
@@ -3154,7 +3198,7 @@ namespace
         sensitivity.target = target;
         LogZoomStatus("mouse-sensitivity-discovery-started");
         sensitivity.active = ReadVerifiedMouseSensitivity(target.options, sensitivity.owner,
-            sensitivity.valueAddress, sensitivity.optionsSlotAddress, sensitivity.originalValue);
+            sensitivity.valueAddress, sensitivity.optionsSlotAddress, sensitivity.originalValue, &sensitivity.wrapper);
         g_nextZoomSensitivityRetryAt = now + kFovRetryDelayMs;
         LogZoomStatus(sensitivity.active ? "mouse-sensitivity-ready" : "mouse-sensitivity-unavailable");
     }

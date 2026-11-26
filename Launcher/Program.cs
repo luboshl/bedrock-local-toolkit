@@ -43,7 +43,7 @@ internal static class Program
                 $"third-person {zoomConfig.ThirdPersonFov}, transition {zoomConfig.TransitionDurationMs} ms, " +
                 $"sensitivity {zoomConfig.MouseSensitivity}, scaling strength {zoomConfig.SensitivityScalingStrength}; " +
                 $"Zoom {zoomConfig.Zoom}, Nametag {zoomConfig.Nametag}, Always day {zoomConfig.AlwaysDay}, Full Bright {zoomConfig.FullBright}, " +
-                $"indicator {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}; " +
+                $"Client Menu K / {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}; " +
                 $"show nametag when HUD hidden {zoomConfig.ShowNametagWhenHudHidden}; FPS counter {zoomConfig.ShowFpsCounter}; " +
                 $"allow unsupported game version {zoomConfig.AllowUnsupportedGameVersion}.");
             if (zoomConfig.AllowUnsupportedGameVersion)
@@ -495,7 +495,7 @@ internal static class Program
             {
                 2 => $"Zoom ready: a unique FOV entry was verified (check took {preparation.ElapsedMilliseconds} ms).",
                 3 => "Zoom is refusing writes for now: the target is not uniquely verified. See the diagnostic log for details; transient failures are retried automatically.",
-                _ => "Zoom is preparing automatically in the background. The Zoom key will work only after unique verification; check the status indicator and diagnostic log for progress."
+                _ => "Zoom is preparing automatically in the background. The Zoom key will work only after unique verification; check the Client Menu and diagnostic log for progress."
             });
             var nametagReadiness = RunRemoteThread(game, RelocateAddress(targetProcess, localNametagReadiness),
                 IntPtr.Zero, "GetNametagReadiness", out _, out _);
@@ -511,7 +511,7 @@ internal static class Program
             {
                 2 => "Always day: rendering profile ready and enabled by default. In-game behavior awaits verification.",
                 3 => "Always day rejected: profile validation or safe installation failed. See the log for details.",
-                _ => "Always day is preparing; check the indicator and diagnostic log for status."
+                _ => "Always day is preparing; check the Client Menu and diagnostic log for status."
             });
             var brightReadiness = RunRemoteThread(game, RelocateAddress(targetProcess, localBrightReadiness),
                 IntPtr.Zero, "GetFullBrightReadiness", out _, out _);
@@ -519,7 +519,7 @@ internal static class Program
             {
                 2 => "Full Bright: rendering profile ready and enabled by default. The result awaits in-game verification.",
                 3 => "Full Bright rejected: profile validation or safe installation failed. See the log for details.",
-                _ => "Full Bright is preparing; check the indicator and diagnostic log for status."
+                _ => "Full Bright is preparing; check the Client Menu and diagnostic log for status."
             });
         }
         finally

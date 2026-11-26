@@ -314,7 +314,13 @@ namespace
     std::vector<GameInputHook> g_gameInputHooks;
     HBRUSH g_transparentBrush = nullptr;
     volatile LONG g_stopRequested = 0;
-    volatile LONG g_indicatorVisible = 0;
+    std::atomic<bool> g_menuOpen{false};
+    std::atomic<bool> g_zoomEnabled{true};
+    int g_menuSelection = 0;
+    int g_menuKeyPending = 0;
+    std::array<bool, 256> g_menuKeysDown{};
+    std::array<bool, 256> g_menuKeysCaptured{};
+    std::wstring g_menuFeedback;
     volatile LONG g_workerStarted = 0;
     volatile LONG g_pendingZoomWheel = 0;
     volatile LONG g_rawWheelInputActive = 0;
@@ -492,7 +498,7 @@ namespace
 
     bool ModuleShortcutsAllowed(HWND gameWindow)
     {
-        return IsGameActive(gameWindow) && screens::AllowsShortcuts();
+        return !g_menuOpen.load() && IsGameActive(gameWindow) && screens::AllowsShortcuts();
     }
 
     bool MayDetachUnsupportedBuild(bool diagnosticMode, bool gameForeground, bool keyDown, bool keyWasDown)
@@ -1718,7 +1724,7 @@ namespace
 
     bool CanStartZoom(HWND gameWindow, bool releasedTap)
     {
-        return fov::MayActivate(ModuleShortcutsAllowed(gameWindow), releasedTap || IsZoomKeyDown(),
+        return fov::MayActivate(g_zoomEnabled.load() && ModuleShortcutsAllowed(gameWindow), releasedTap || IsZoomKeyDown(),
             (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0, ShortcutNeedsRelease(g_zoomConfig.zoomKey),
             g_zoomRestorePending, InterlockedCompareExchange(&g_stopRequested, 0, 0) != 0, true);
     }
@@ -2108,7 +2114,7 @@ namespace
         if (keyboard.VKey != static_cast<USHORT>(g_zoomConfig.zoomKey)) return;
         if ((keyboard.Flags & RI_KEY_BREAK) != 0 &&
             AcknowledgeZoomKeyReleasePass(kZoomReleasePassRawInput)) return;
-        if (!shortcutsAllowed || ShortcutNeedsRelease(g_zoomConfig.zoomKey)) return;
+        if (!g_zoomEnabled.load() || !shortcutsAllowed || ShortcutNeedsRelease(g_zoomConfig.zoomKey)) return;
         keyboard.MakeCode = 0;
         keyboard.Flags = RI_KEY_BREAK;
         keyboard.VKey = 0;
@@ -2474,7 +2480,7 @@ namespace
         bool shortcutsAllowed)
     {
         static volatile LONG suppressedLogged = 0;
-        if (stateArray == nullptr || !shortcutsAllowed ||
+        if (stateArray == nullptr || !g_zoomEnabled.load() || !shortcutsAllowed ||
             ShortcutNeedsRelease(g_zoomConfig.zoomKey)) return validCount;
 
         const uint32_t boundedCount = (std::min)(stateArrayCount, validCount);
@@ -2529,7 +2535,7 @@ namespace
 
     bool ShouldHideZoomKeyFromGame(bool shortcutsAllowed)
     {
-        return g_zoomConfig.zoomKey > 0 && g_zoomConfig.zoomKey <= 0xFF &&
+        return g_zoomEnabled.load() && g_zoomConfig.zoomKey > 0 && g_zoomConfig.zoomKey <= 0xFF &&
             shortcutsAllowed && !ShortcutNeedsRelease(g_zoomConfig.zoomKey);
     }
 
@@ -3085,6 +3091,34 @@ namespace
         return CallNextHookEx(nullptr, code, removeFlag, data);
     }
 
+    bool IsMenuShortcut(DWORD key)
+    {
+        return key == static_cast<DWORD>(g_zoomConfig.indicatorKey) ||
+            (key == 'K' && g_zoomConfig.zoomKey != 'K' && g_zoomConfig.nametagKey != 'K' &&
+                g_zoomConfig.alwaysDayKey != 'K' && g_zoomConfig.fullBrightKey != 'K' &&
+                g_zoomConfig.exitKey != 'K');
+    }
+
+    bool CaptureMenuKey(const KBDLLHOOKSTRUCT& key, bool down, bool up)
+    {
+        const DWORD vk = key.vkCode;
+        if (vk >= g_menuKeysDown.size() || (!down && !up)) return false;
+        const bool shortcut = IsMenuShortcut(vk);
+        const bool navigation = vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT ||
+            vk == VK_RIGHT || vk == VK_RETURN || vk == VK_ESCAPE;
+        if (!shortcut && !navigation) return false;
+        bool& captured = g_menuKeysCaptured[vk];
+        const bool alreadyDown = std::exchange(g_menuKeysDown[vk], down);
+        if (up) return std::exchange(captured, false);
+        if (alreadyDown) return captured;
+        if ((key.flags & LLKHF_ALTDOWN) || (!shortcut && !g_menuOpen.load())) return false;
+        const HWND game = g_trackedGameWindow;
+        if (!IsGameActive(game) || !screens::AllowsShortcuts()) return false;
+        if (g_menuKeyPending == 0) g_menuKeyPending = shortcut ? 'K' : static_cast<int>(vk);
+        captured = true;
+        return true;
+    }
+
     LRESULT CALLBACK ZoomKeyboardHookProc(int code, WPARAM message, LPARAM data)
     {
         if (code == HC_ACTION && data != 0)
@@ -3092,6 +3126,7 @@ namespace
             const auto* keyboard = reinterpret_cast<const KBDLLHOOKSTRUCT*>(data);
             const bool keyDown = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
             const bool keyUp = message == WM_KEYUP || message == WM_SYSKEYUP;
+            if (CaptureMenuKey(*keyboard, keyDown, keyUp)) return 1;
             if (keyboard->vkCode == VK_ESCAPE && keyDown) g_pendingZoomPress = {};
             const bool neededRelease = ShortcutNeedsRelease(static_cast<int>(keyboard->vkCode));
             bool shortcutsAllowed = false;
@@ -3228,7 +3263,7 @@ namespace
         case FovScanResult::Unique:
             PrepareZoomSensitivity(g_fovScan.foundTarget);
             event = "ready";
-            SetOverlayMessage(L"Zoom ready; shortcuts are configurable in bedrock-toolkit.ini", RGB(135, 255, 170));
+            SetOverlayMessage(L"Zoom ready", RGB(135, 255, 170));
             break;
         case FovScanResult::None:
             event = "not-found";
@@ -3447,6 +3482,8 @@ namespace
             return;
         }
 
+        if (GetWindow(g_overlayWindow, GW_OWNER) != gameWindow)
+            SetWindowLongPtrW(g_overlayWindow, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(gameWindow));
         SetWindowPos(
             g_overlayWindow,
             HWND_TOPMOST,
@@ -3454,7 +3491,223 @@ namespace
             topLeft.y,
             width,
             height,
-            OverlayPositionFlags(InterlockedCompareExchange(&g_indicatorVisible, 0, 0) != 0));
+            OverlayPositionFlags(g_menuOpen.load()));
+    }
+
+    enum MenuRow
+    {
+        MenuZoom, MenuFirstFov, MenuThirdFov, MenuTransition, MenuSensitivity, MenuScaling,
+        MenuSmoothing, MenuSmoothingStrength, MenuNametag, MenuNametagHud,
+        MenuDay, MenuBright, MenuFps, MenuFpsSize, MenuRowCount
+    };
+
+    struct MenuSetting
+    {
+        const wchar_t* section;
+        const wchar_t* key;
+        double value;
+        double minimum;
+        double maximum;
+        double step;
+        bool restart;
+    };
+
+    ZoomConfig g_menuConfig;
+    bool g_menuFpsEnabled = true;
+    int g_menuFpsSize = fpscounter::kDefaultFontSize;
+    bool g_menuFpsReady = false;
+    bool g_menuPainted = false;
+
+    MenuSetting SettingForRow(int row)
+    {
+        const auto& config = g_menuConfig;
+        switch (row)
+        {
+        case MenuFirstFov: return {L"Zoom", L"FirstPersonFov", config.firstPersonFov, 1, 120, 1, true};
+        case MenuThirdFov: return {L"Zoom", L"ThirdPersonFov", config.thirdPersonFov, 1, 120, 1, true};
+        case MenuTransition: return {L"Zoom", L"TransitionDurationMs", double(config.transitionDurationMs), 1, 10000, 25, true};
+        case MenuSensitivity: return {L"Zoom", L"MouseSensitivity", config.mouseSensitivity, 0, 100, 5, true};
+        case MenuScaling: return {L"Zoom", L"SensitivityScalingStrength", config.sensitivityScalingStrength, 1, 2, 0.1, true};
+        case MenuSmoothing: return {L"Zoom", L"CameraSmoothingEnabled", double(config.cameraSmoothingEnabled), 0, 1, 0, true};
+        case MenuSmoothingStrength: return {L"Zoom", L"CameraSmoothingStrength", config.cameraSmoothingStrength, 1, 10, 1, true};
+        case MenuNametagHud: return {L"nametag", L"show_when_hud_hidden", double(config.showNametagWhenHudHidden), 0, 1, 0, false};
+        case MenuFps: return {L"fps_counter", L"enabled", double(g_menuFpsEnabled), 0, 1, 0, false};
+        case MenuFpsSize: return {L"fps_counter", L"font_size", double(g_menuFpsSize), 12, 48, 1, false};
+        default: return {};
+        }
+    }
+
+    void UpdateMenuSetting(int row, int direction)
+    {
+        const MenuSetting setting = SettingForRow(row);
+        if (!setting.key || (setting.step != 0 && direction == 0)) return;
+        const double next = setting.step == 0 ? double(setting.value == 0) :
+            std::clamp(setting.value + direction * setting.step, setting.minimum, setting.maximum);
+        if (next == setting.value) return;
+
+        // The Win32 INI writer does not recognize UTF-8 BOM files.
+        std::wstring decoded;
+        if (!ReadUtf8BomConfig(g_toolkitConfigPath, decoded) || !decoded.empty())
+        {
+            g_menuFeedback = L"Cannot save this INI encoding";
+            return;
+        }
+        wchar_t numeric[32]{};
+        swprintf_s(numeric, L"%.6g", next);
+        const wchar_t* value = setting.step == 0 ? (next != 0 ? L"true" : L"false") : numeric;
+        if (g_toolkitConfigPath.empty() ||
+            !WritePrivateProfileStringW(setting.section, setting.key, value, g_toolkitConfigPath.c_str()))
+        {
+            g_menuFeedback = L"Could not save bedrock-toolkit.ini";
+            return;
+        }
+
+        switch (row)
+        {
+        case MenuFirstFov: g_menuConfig.firstPersonFov = static_cast<float>(next); break;
+        case MenuThirdFov: g_menuConfig.thirdPersonFov = static_cast<float>(next); break;
+        case MenuTransition: g_menuConfig.transitionDurationMs = static_cast<ULONGLONG>(next); break;
+        case MenuSensitivity: g_menuConfig.mouseSensitivity = static_cast<float>(next); break;
+        case MenuScaling: g_menuConfig.sensitivityScalingStrength = static_cast<float>(next); break;
+        case MenuSmoothing: g_menuConfig.cameraSmoothingEnabled = next != 0; break;
+        case MenuSmoothingStrength: g_menuConfig.cameraSmoothingStrength = static_cast<float>(next); break;
+        case MenuNametagHud:
+            g_menuConfig.showNametagWhenHudHidden = next != 0;
+            InterlockedExchange(&nametag::showWhenHudHidden, next != 0);
+            break;
+        case MenuFps: g_menuFpsEnabled = next != 0; break;
+        case MenuFpsSize: g_menuFpsSize = static_cast<int>(next); break;
+        }
+        LogZoomStatus("client-menu-setting-saved");
+        g_menuFeedback = setting.restart ? L"Saved. Restart the toolkit to apply Zoom settings." : L"Setting saved";
+    }
+
+    void ApplyMenuKey(int key, HWND gameWindow, bool fpsReady)
+    {
+        if (key == 'K' || key == VK_ESCAPE)
+        {
+            const bool open = key != VK_ESCAPE && !g_menuOpen.load();
+            g_menuOpen.store(open);
+            if (open)
+            {
+                g_menuFpsReady = fpsReady;
+                g_menuFpsEnabled = fpscounter::LoadEnabled(g_toolkitConfigPath);
+                g_menuFpsSize = fpscounter::LoadFontSize(g_toolkitConfigPath);
+                g_menuPainted = false;
+                UpdateOverlayBounds(gameWindow);
+                LogZoomStatus("client-menu-opened");
+            }
+            else
+            {
+                ShowWindow(g_overlayWindow, SW_HIDE);
+                LogZoomStatus("client-menu-closed");
+            }
+        }
+        else if (g_menuOpen.load())
+        {
+            if (key == VK_DOWN || key == VK_UP)
+                g_menuSelection = (g_menuSelection + (key == VK_DOWN ? 1 : MenuRowCount - 1)) % MenuRowCount;
+            else if (key == VK_RETURN || key == VK_LEFT || key == VK_RIGHT)
+            {
+                const bool activate = key == VK_RETURN;
+                switch (g_menuSelection)
+                {
+                case MenuZoom:
+                    if (activate)
+                    {
+                        const bool enabled = !g_zoomEnabled.load();
+                        g_zoomEnabled.store(enabled);
+                        LogZoomStatus(enabled ? "client-menu-zoom-enabled" : "client-menu-zoom-disabled");
+                    }
+                    break;
+                case MenuNametag:
+                    if (activate) LogNametagStatus(nametag::Toggle() ? "menu-toggle" : "menu-toggle-refused");
+                    break;
+                case MenuDay:
+                    if (activate) LogAlwaysDayStatus(alwaysday::Toggle() ? "menu-toggle" : "menu-toggle-refused");
+                    break;
+                case MenuBright:
+                    if (activate) LogFullBrightStatus(fullbright::Toggle() ? "menu-toggle" : "menu-toggle-refused");
+                    break;
+                default:
+                    UpdateMenuSetting(g_menuSelection, activate ? 0 : (key == VK_LEFT ? -1 : 1));
+                    break;
+                }
+            }
+        }
+        InvalidateRect(g_overlayWindow, nullptr, FALSE);
+    }
+
+    void PaintClientMenu(HDC dc, const RECT& client, UINT dpi)
+    {
+        constexpr const wchar_t* labels[] = {
+            L"Zoom", L"   First-person FOV", L"   Third-person FOV", L"   Transition (ms)",
+            L"   Mouse sensitivity (%)", L"   Sensitivity scaling", L"   Camera smoothing",
+            L"   Smoothing strength", L"Nametag", L"   Show with HUD hidden",
+            L"Always day", L"Full Bright", L"FPS counter", L"   Text size (px)"
+        };
+        static_assert(std::size(labels) == MenuRowCount);
+        const auto px = [dpi](int value) { return MulDiv(value, dpi ? static_cast<int>(dpi) : 96, 96); };
+        const int top = px(12), left = px(12), header = px(82), rowHeight = px(23), footer = px(62);
+        const int visible = std::clamp((static_cast<int>(client.bottom) - top - header - footer) / rowHeight,
+            1, static_cast<int>(MenuRowCount));
+        const int first = std::clamp(g_menuSelection - visible + 1, 0, MenuRowCount - visible);
+        RECT panel{left, top, (std::min)(client.right, static_cast<LONG>(px(570))), top + header + visible * rowHeight + footer};
+        SetDCBrushColor(dc, kPanelColor);
+        FillRect(dc, &panel, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        SetBkMode(dc, TRANSPARENT);
+        const HFONT font = CreateFontW(-px(17), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        const HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+        auto text = [&](const wchar_t* value, int y, COLORREF color, UINT flags, int height)
+        {
+            RECT bounds{left + px(14), y, panel.right - px(14), y + height};
+            SetTextColor(dc, color);
+            DrawTextW(dc, value, -1, &bounds, flags | DT_NOPREFIX);
+        };
+        const COLORREF white = RGB(235, 241, 249);
+        text(L"Client Menu", top + px(9), white, DT_SINGLELINE, px(24));
+        text(g_overlayMessage, top + px(35), g_overlayTextColor, DT_WORDBREAK, px(43));
+        const auto status = [](LONG state, bool enabled)
+        {
+            if (state != 2) return enabled ? L"On (unavailable)" : L"Off (unavailable)";
+            return enabled ? L"On" : L"Off";
+        };
+        for (int row = first; row < first + visible; ++row)
+        {
+            const int y = top + header + (row - first) * rowHeight;
+            if (row == g_menuSelection)
+            {
+                const RECT highlight{left + px(6), y, panel.right - px(6), y + rowHeight};
+                SetDCBrushColor(dc, RGB(50, 76, 105));
+                FillRect(dc, &highlight, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+            }
+            text(labels[row], y + px(2), white, DT_SINGLELINE | DT_END_ELLIPSIS, rowHeight);
+            wchar_t numeric[32]{};
+            const wchar_t* value = numeric;
+            switch (row)
+            {
+            case MenuZoom: value = status(g_zoomReadiness, g_zoomEnabled.load()); break;
+            case MenuNametag: value = status(nametag::readiness, nametag::enabled != 0); break;
+            case MenuDay: value = status(alwaysday::readiness, alwaysday::enabled != 0); break;
+            case MenuBright: value = status(fullbright::readiness, fullbright::enabled != 0); break;
+            case MenuFps: value = status(g_menuFpsReady ? 2 : 3, g_menuFpsEnabled); break;
+            default:
+                const MenuSetting setting = SettingForRow(row);
+                if (setting.step == 0) value = setting.value != 0 ? L"On" : L"Off";
+                else swprintf_s(numeric, L"%.6g", setting.value);
+                break;
+            }
+            text(value, y + px(2), white, DT_SINGLELINE | DT_RIGHT, rowHeight);
+        }
+        const int bottom = top + header + visible * rowHeight;
+        text(L"Up / Down: select     Enter: toggle     Left / Right: adjust", bottom + px(5),
+            white, DT_SINGLELINE | DT_END_ELLIPSIS, px(20));
+        text(g_menuFeedback.empty() ? L"Esc: close     Zoom settings apply after restart" : g_menuFeedback.c_str(),
+            bottom + px(27), RGB(170, 201, 229), DT_WORDBREAK, px(35));
+        if (oldFont) SelectObject(dc, oldFont);
+        if (font) DeleteObject(font);
     }
 
     LRESULT CALLBACK OverlayWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -3475,44 +3728,15 @@ namespace
             GetClientRect(window, &clientRect);
             FillRect(dc, &clientRect, g_transparentBrush);
 
-            RECT panel{ 22, 22, 920, 176 };
-            HBRUSH panelBrush = CreateSolidBrush(kPanelColor);
-            if (panelBrush != nullptr)
+            if (g_menuOpen.load())
             {
-                FillRect(dc, &panel, panelBrush);
-                DeleteObject(panelBrush);
+                PaintClientMenu(dc, clientRect, GetDpiForWindow(window));
+                if (!g_menuPainted)
+                {
+                    g_menuPainted = true;
+                    LogZoomStatus("client-menu-painted");
+                }
             }
-
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, g_overlayTextColor);
-            HFONT font = CreateFontW(22, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-            HGDIOBJ oldFont = font != nullptr ? SelectObject(dc, font) : nullptr;
-            TextOutW(dc, 38, 36, g_overlayMessage, lstrlenW(g_overlayMessage));
-            const LONG nametagReady = InterlockedCompareExchange(&nametag::readiness, 0, 0);
-            const wchar_t* nametagText = nametagReady == 2 ?
-                (InterlockedCompareExchange(&nametag::enabled, 0, 0) ?
-                    L"Nametag: ON | both third-person views" : L"Nametag: OFF") :
-                (nametagReady == 3 ? L"Nametag unavailable; see nametag diagnostic log" : L"Nametag preparing automatically");
-            TextOutW(dc, 38, 70, nametagText, lstrlenW(nametagText));
-            const wchar_t* dayText = InterlockedCompareExchange(&alwaysday::readiness, 0, 0) == 2 ?
-                (InterlockedCompareExchange(&alwaysday::enabled, 0, 0) ? L"Always day: ON" : L"Always day: OFF") :
-                L"Always day unavailable; see diagnostic log";
-            TextOutW(dc, 38, 104, dayText, lstrlenW(dayText));
-            const wchar_t* brightText = InterlockedCompareExchange(&fullbright::readiness, 0, 0) == 2 ?
-                (InterlockedCompareExchange(&fullbright::enabled, 0, 0) ? L"Full Bright: ON" : L"Full Bright: OFF") :
-                L"Full Bright unavailable; see diagnostic log";
-            TextOutW(dc, 38, 138, brightText, lstrlenW(brightText));
-            if (oldFont != nullptr)
-            {
-                SelectObject(dc, oldFont);
-            }
-            if (font != nullptr)
-            {
-                DeleteObject(font);
-            }
-
             EndPaint(window, &paint);
             return 0;
         }
@@ -3578,6 +3802,7 @@ namespace
         // Diagnostics are optional; failed startup drops logs without falling
         // back to synchronous writes on the keyboard-hook owner.
         g_diagnosticWriter.Start();
+        g_menuConfig = g_zoomConfig;
         const bool fpsFrameSourceReady = g_fpsCounter.Start(g_module, g_toolkitConfigPath,
             [](const char* event) { LogZoomStatus(event); }) && InstallMinecraftGameUpdateHook();
         nametag::Initialize(g_gameModuleBase, g_supportedBuild, g_zoomConfig.showNametagWhenHudHidden);
@@ -3595,7 +3820,6 @@ namespace
         LONG64 lastOwnChecks = 0;
         bool f6WasDown = false;
         bool f7WasDown = (GetAsyncKeyState(g_zoomConfig.nametagKey) & 0x8000) != 0;
-        bool indicatorWasDown = false;
         bool escapeWasDown = false;
         bool detachWasDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
         bool zoomNeedsRelease = false;
@@ -3673,7 +3897,23 @@ namespace
                 }
                 detachWasDown = detachDown;
             }
-            const bool active = foreground && screens::AllowsShortcuts();
+            const bool gameplay = foreground && screens::AllowsShortcuts();
+            if (!gameplay || stopWhenRestored)
+            {
+                g_menuOpen.store(false);
+                g_menuKeyPending = 0;
+            }
+            else if (const int key = std::exchange(g_menuKeyPending, 0))
+            {
+                ApplyMenuKey(key, gameWindow, fpsFrameSourceReady);
+            }
+            if (g_menuOpen.load() && loopTime - lastOverlayUpdateAt >= 100)
+            {
+                UpdateOverlayBounds(gameWindow);
+                InvalidateRect(g_overlayWindow, nullptr, FALSE);
+                lastOverlayUpdateAt = loopTime;
+            }
+            const bool active = gameplay && !g_menuOpen.load();
             const ZoomPress press = std::exchange(g_pendingZoomPress, {});
             if (active != shortcutsWereAllowed)
             {
@@ -3772,24 +4012,6 @@ namespace
                 }
                 f7WasDown = f7Down;
 
-                const bool indicatorDown = (GetAsyncKeyState(g_zoomConfig.indicatorKey) & 0x8000) != 0;
-                if (indicatorDown && !indicatorWasDown && !ShortcutNeedsRelease(g_zoomConfig.indicatorKey) &&
-                    ModuleShortcutsAllowed(gameWindow))
-                {
-                    const LONG newVisibility = InterlockedCompareExchange(&g_indicatorVisible, 0, 0) == 0 ? 1 : 0;
-                    InterlockedExchange(&g_indicatorVisible, newVisibility);
-                    if (newVisibility != 0)
-                    {
-                        UpdateOverlayBounds(gameWindow);
-                        InvalidateRect(g_overlayWindow, nullptr, TRUE);
-                    }
-                    else
-                    {
-                        ShowWindow(g_overlayWindow, SW_HIDE);
-                    }
-                }
-                indicatorWasDown = indicatorDown;
-
                 const bool detachDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
                 if (detachDown && !detachWasDown && !ShortcutNeedsRelease(g_zoomConfig.exitKey) &&
                     ModuleShortcutsAllowed(gameWindow))
@@ -3808,13 +4030,6 @@ namespace
                 }
                 detachWasDown = detachDown;
 
-                if (InterlockedCompareExchange(&g_indicatorVisible, 0, 0) != 0 &&
-                    loopTime - lastOverlayUpdateAt >= 100)
-                {
-                    UpdateOverlayBounds(gameWindow);
-                    InvalidateRect(g_overlayWindow, nullptr, FALSE);
-                    lastOverlayUpdateAt = loopTime;
-                }
             }
             else
             {
@@ -3828,13 +4043,12 @@ namespace
                     SetOverlayMessage(L"Restoring original FOV after leaving gameplay", RGB(135, 255, 170));
                 }
 
-                indicatorWasDown = (GetAsyncKeyState(g_zoomConfig.indicatorKey) & 0x8000) != 0;
                 brightWasDown = (GetAsyncKeyState(g_zoomConfig.fullBrightKey) & 0x8000) != 0;
                 dayWasDown = (GetAsyncKeyState(g_zoomConfig.alwaysDayKey) & 0x8000) != 0;
                 f7WasDown = (GetAsyncKeyState(g_zoomConfig.nametagKey) & 0x8000) != 0;
                 escapeWasDown = false;
                 detachWasDown = (GetAsyncKeyState(g_zoomConfig.exitKey) & 0x8000) != 0;
-                if (IsWindowVisible(g_overlayWindow))
+                if (!g_menuOpen.load() && IsWindowVisible(g_overlayWindow))
                 {
                     ShowWindow(g_overlayWindow, SW_HIDE);
                 }
@@ -3922,7 +4136,7 @@ namespace
                 // any newly recorded edge for the input step in the next pass.
                 PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
                 if (g_pendingZoomPress.window != nullptr) continue;
-                if (!g_zoom.active && fov::MayActivate(ModuleShortcutsAllowed(gameWindow),
+                if (!g_zoom.active && fov::MayActivate(g_zoomEnabled.load() && ModuleShortcutsAllowed(gameWindow),
                     IsZoomKeyDown(),
                     (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0,
                     zoomNeedsRelease || ShortcutNeedsRelease(g_zoomConfig.zoomKey), g_zoomRestorePending, stopWhenRestored,
@@ -4081,7 +4295,13 @@ extern "C" __declspec(dllexport) DWORD WINAPI StartGameMod(LPVOID)
     }
 
     InterlockedExchange(&g_stopRequested, 0);
-    InterlockedExchange(&g_indicatorVisible, 0);
+    g_menuOpen.store(false);
+    g_zoomEnabled.store(true);
+    g_menuSelection = 0;
+    g_menuKeyPending = 0;
+    g_menuKeysDown.fill(false);
+    g_menuKeysCaptured.fill(false);
+    g_menuFeedback.clear();
     InterlockedExchange(&g_nativeMouseCallbacks, 0);
     std::fill(std::begin(g_nativeMouseHookStates), std::end(g_nativeMouseHookStates), NativeMouseHookState{});
     g_zoom = {};

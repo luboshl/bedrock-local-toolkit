@@ -1405,11 +1405,17 @@ namespace
         BeginZoomRestoreTransition();
         const double restoreStartedAt = g_zoom.transitionStartedAt;
         const double restoreDuration = g_zoom.transitionDurationMs;
-        Check(g_zoom.transitionStartValue == 1.0f && restoreDuration > 125.0,
-            "releasing deep Zoom starts a longer transition from the displayed FOV");
-        AdvanceZoomTransition(restoreStartedAt + 125.0);
-        Check(g_zoom.restoring && fixture.Value() > 1.0f && fixture.Value() < 70.0f,
-            "restoration advances smoothly beyond the regular Zoom duration");
+        const double expectedRestoreDuration = 125.0 * (std::max)(1.0,
+            0.65 * std::abs(LogFovProjection(70.0f) - LogFovProjection(1.0f)) /
+                g_zoom.transitionReferenceDistance);
+        Check(g_zoom.transitionStartValue == 1.0f && restoreDuration > 125.0 &&
+            std::abs(restoreDuration - expectedRestoreDuration) < 1e-12,
+            "releasing deep Zoom starts a shorter scaled restoration from the displayed FOV");
+        AdvanceZoomTransition(restoreStartedAt + 1.0);
+        const float firstRestoreStep = fixture.Value();
+        AdvanceZoomTransition(restoreStartedAt + restoreDuration / 2.0);
+        Check(g_zoom.restoring && firstRestoreStep > 1.0f && fixture.Value() > firstRestoreStep && fixture.Value() < 70.0f,
+            "restoration starts moving immediately and advances smoothly");
         AdvanceZoomTransition(restoreStartedAt + restoreDuration + 1.0);
         float restoredValues[5]{};
         Check(ReadFovPattern(fixture.target.pattern, restoredValues) && restoredValues[0] == 30.0f &&

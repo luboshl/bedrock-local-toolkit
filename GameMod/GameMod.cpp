@@ -31,6 +31,7 @@
 #include "FullBright.h"
 #include "ScreenInput.h"
 #include "DiagnosticWriter.h"
+#include "ToolkitIni.h"
 #include "FpsCounter.h"
 #include "FpsProfile.h"
 #include "CameraRotationProfile.h"
@@ -38,6 +39,10 @@
 
 namespace
 {
+    using toolkitini::ReadDecodedConfigValue;
+    using toolkitini::ReadUtf8BomConfig;
+    using toolkitini::TrimWhitespace;
+
     constexpr COLORREF kTransparentColor = RGB(255, 0, 255);
     constexpr COLORREF kPanelColor = RGB(20, 34, 30);
     constexpr wchar_t kWindowClassName[] = L"MinecraftClient.GameMod.LocalOverlay";
@@ -1090,18 +1095,6 @@ namespace
         return true;
     }
 
-    std::wstring TrimWhitespace(const std::wstring& text)
-    {
-        const size_t first = text.find_first_not_of(L" \t\r\n");
-        if (first == std::wstring::npos)
-        {
-            return {};
-        }
-
-        const size_t last = text.find_last_not_of(L" \t\r\n");
-        return text.substr(first, last - first + 1);
-    }
-
     bool ReadConfigValue(const wchar_t* key, std::wstring& value, const std::wstring& configPath)
     {
         wchar_t buffer[1024]{};
@@ -1124,48 +1117,6 @@ namespace
         if (length == 0 || length >= std::size(buffer) - 1) return false;
         value.assign(buffer, length);
         return true;
-    }
-
-    bool ReadUtf8BomConfig(const std::wstring& path, std::wstring& config)
-    {
-        std::ifstream file(path, std::ios::binary);
-        char bom[3]{};
-        if (!file.read(bom, sizeof(bom)) || std::memcmp(bom, "\xEF\xBB\xBF", sizeof(bom)) != 0)
-            return true;
-
-        const std::string bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-        if (bytes.empty()) return true;
-        if (bytes.size() > INT_MAX) return false;
-        const int size = static_cast<int>(bytes.size());
-        const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), size, nullptr, 0);
-        if (length == 0) return false;
-        config.resize(length);
-        return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), size, config.data(), length) == length;
-    }
-
-    bool ReadDecodedConfigValue(const std::wstring& config, const wchar_t* section, const wchar_t* key,
-        std::wstring& value)
-    {
-        std::wistringstream stream(config);
-        bool inSection = false;
-        for (std::wstring line; std::getline(stream, line);)
-        {
-            line = TrimWhitespace(line);
-            if (line.empty() || line.front() == L';' || line.front() == L'#') continue;
-            if (line.front() == L'[' && line.back() == L']')
-            {
-                inSection = _wcsicmp(TrimWhitespace(line.substr(1, line.size() - 2)).c_str(), section) == 0;
-                continue;
-            }
-            const size_t separator = line.find(L'=');
-            if (inSection && separator != std::wstring::npos &&
-                _wcsicmp(TrimWhitespace(line.substr(0, separator)).c_str(), key) == 0)
-            {
-                value = TrimWhitespace(line.substr(separator + 1));
-                return true;
-            }
-        }
-        return false;
     }
 
     bool ParseVirtualKey(std::wstring value, int& key)
@@ -3591,8 +3542,9 @@ namespace
             if (open)
             {
                 g_menuFpsReady = fpsReady;
-                g_menuFpsEnabled = fpscounter::LoadEnabled(g_toolkitConfigPath);
-                g_menuFpsSize = fpscounter::LoadFontSize(g_toolkitConfigPath);
+                const auto fpsSettings = fpscounter::LoadSettings(g_toolkitConfigPath);
+                g_menuFpsEnabled = fpsSettings.enabled;
+                g_menuFpsSize = fpsSettings.fontSize;
                 g_menuPainted = false;
                 UpdateOverlayBounds(gameWindow);
                 LogZoomStatus("client-menu-opened");

@@ -1,16 +1,16 @@
+using System.IO;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Globalization;
 using Microsoft.Win32.SafeHandles;
 
 namespace MinecraftClient.Launcher;
 
-internal static class Program
+internal static class GameModuleLauncher
 {
-    private const string ProcessName = "Minecraft.Windows";
-    private const string ExpectedPackageFamily = "Microsoft.MinecraftUWP_8wekyb3d8bbwe";
+    internal const string ProcessName = "Minecraft.Windows";
+    internal const string PackageFamily = "Microsoft.MinecraftUWP_8wekyb3d8bbwe";
     private const string ExpectedPackageFullName = "Microsoft.MinecraftUWP_1.26.6501.0_x64__8wekyb3d8bbwe";
     private const ushort ImageFileMachineUnknown = 0;
     private const ushort ImageFileMachineAmd64 = 0x8664;
@@ -25,221 +25,57 @@ internal static class Program
     private const uint WaitTimeout = 0x102;
     private const uint RemoteCallTimeoutMs = 30_000;
 
-    private sealed record ZoomConfig(float FirstPersonFov, float ThirdPersonFov,
-        uint TransitionDurationMs, float MouseSensitivity, float SensitivityScalingStrength,
-        string Zoom, string Nametag, string AlwaysDay, string FullBright, string StatusIndicator, string SafeDetach,
-        bool ShowNametagWhenHudHidden, bool ShowFpsCounter,
-        bool AllowUnsupportedGameVersion = false, bool CameraSmoothingEnabled = false, float CameraSmoothingStrength = 5f);
-
-    private static int Main()
+    internal static void Start(int processId, bool allowUnsupportedGameVersion,
+        Action<string> log, CancellationToken cancellationToken)
     {
-        Console.OutputEncoding = Encoding.UTF8;
-
-        try
+        cancellationToken.ThrowIfCancellationRequested();
+        using var queryHandle = NativeMethods.OpenProcess(ProcessQueryLimitedInformation, false, processId);
+        if (queryHandle.IsInvalid)
         {
-            var zoomConfigPath = Path.Combine(AppContext.BaseDirectory, "bedrock-toolkit.ini");
-            var zoomConfig = LoadZoomConfig(zoomConfigPath);
-            Console.WriteLine($"Configuration ({zoomConfigPath}): FOV first-person {zoomConfig.FirstPersonFov}, " +
-                $"third-person {zoomConfig.ThirdPersonFov}, transition {zoomConfig.TransitionDurationMs} ms, " +
-                $"sensitivity {zoomConfig.MouseSensitivity}, scaling strength {zoomConfig.SensitivityScalingStrength}; " +
-                $"Zoom {zoomConfig.Zoom}, Nametag {zoomConfig.Nametag}, Always day {zoomConfig.AlwaysDay}, Full Bright {zoomConfig.FullBright}, " +
-                $"Client Menu K / {zoomConfig.StatusIndicator}, detach {zoomConfig.SafeDetach}; " +
-                $"show nametag when HUD hidden {zoomConfig.ShowNametagWhenHudHidden}; FPS counter {zoomConfig.ShowFpsCounter}; " +
-                $"allow unsupported game version {zoomConfig.AllowUnsupportedGameVersion}.");
-            if (zoomConfig.AllowUnsupportedGameVersion)
-            {
-                Console.Error.WriteLine(
-                    "WARNING: Unsupported-version mode is experimental. It does not make this game build compatible; " +
-                    "features remain disabled unless their existing safety profiles validate.");
-            }
-
-            if (zoomConfig.CameraSmoothingEnabled)
-                Console.WriteLine($"Camera rotation smoothing requested at strength {zoomConfig.CameraSmoothingStrength}. " +
-                    "See the Zoom log for camera profile verification.");
-
-            var target = WaitForSupportedGame(TimeSpan.FromSeconds(90), zoomConfig.AllowUnsupportedGameVersion);
-            Console.WriteLine($"Verified target: PID {target.ProcessId}, {target.PackageFullName}, x64.");
-
-            using var game = NativeMethods.OpenProcess(RequiredRemoteLoadAccess, false, target.ProcessId);
-            if (game.IsInvalid)
-            {
-                var error = Marshal.GetLastWin32Error();
-                throw new InvalidOperationException(
-                    $"Windows denied the required process access (Win32 {error}: {new Win32Exception(error).Message}). " +
-                    "GameMod.dll was not loaded; the launcher did not continue.");
-            }
-
-            var recheckedTarget = InspectProcess(game, target.ProcessId);
-            EnsureSupportedTarget(recheckedTarget, zoomConfig.AllowUnsupportedGameVersion);
-            Console.WriteLine("Remote-load access check passed.");
-
-            var dllPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "GameMod.dll"));
-            if (!File.Exists(dllPath))
-            {
-                throw new FileNotFoundException("Locally built GameMod.dll is missing next to the launcher.", dllPath);
-            }
-
-            var pointerConfigPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "zoom-pointer.ini"));
-            if (!File.Exists(pointerConfigPath))
-            {
-                Console.WriteLine("Saved pointer chain not found; using automatic FOV validation for the supported build.");
-            }
-
-            using var targetProcess = Process.GetProcessById(target.ProcessId);
-            var preloadedModule = FindModule(targetProcess, "GameMod.dll");
-            if (preloadedModule is not null &&
-                !string.Equals(Path.GetFullPath(preloadedModule.FileName), dllPath, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException($"A different GameMod.dll is already loaded in the target process: {preloadedModule.FileName}");
-            }
-
-            LoadAndStartModule(game, targetProcess, dllPath, preloadedModule);
-            Console.WriteLine("GameMod.dll is loaded and initialization has started.");
-            Console.WriteLine("Use only in a local single-player world. If sensitivity is verified, it will change during Zoom and be restored when Zoom ends; otherwise, Zoom continues without changing sensitivity. Use the mouse wheel to adjust FOV in 5° increments within 1–120°; the wheel is captured while Zoom is active. Releasing the Zoom key, pressing Esc, or losing focus smoothly restores the original FOV. Nametag displays your name in both third-person views and is occluded by blocks. Preparation starts automatically when the module loads. The detach key first restores FOV, any changed sensitivity, and the Nametag, Always day, and Full Bright rendering hooks. Always day switches local rendering to noon; the default key is F6. Full Bright brightens the local light texture; the default key is F8.");
-            Console.WriteLine($"Run diagnostics: {Path.Combine(AppContext.BaseDirectory, $"zoom-status-{target.ProcessId}.log")}");
-            Console.WriteLine($"Nametag diagnostics: {Path.Combine(AppContext.BaseDirectory, $"nametag-status-{target.ProcessId}.log")}");
-            Console.WriteLine($"Always day diagnostics: {Path.Combine(AppContext.BaseDirectory, $"always-day-status-{target.ProcessId}.log")}");
-            Console.WriteLine($"Full Bright diagnostics: {Path.Combine(AppContext.BaseDirectory, $"full-bright-status-{target.ProcessId}.log")}");
-            return 0;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Error: {ex.Message}");
-            return 1;
-        }
-    }
-
-    private static ZoomConfig LoadZoomConfig(string path)
-    {
-        var defaults = new ZoomConfig(25f, 29f, 75, 45f, 1.5f, "T", "F7", "F6", "F8", "F9", "F10", true, true);
-        if (!File.Exists(path)) return defaults;
-
-        var zoomValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var shortcutValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var nametagValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var compatibilityValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var fpsCounterValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        Dictionary<string, string>? sectionValues = null;
-        foreach (var rawLine in File.ReadLines(path))
-        {
-            var line = rawLine.Trim();
-            if (line.Length == 0 || line[0] is ';' or '#') continue;
-            if (line.StartsWith('[') && line.EndsWith(']'))
-            {
-                var section = line[1..^1].Trim();
-                sectionValues = string.Equals(section, "Zoom", StringComparison.OrdinalIgnoreCase) ? zoomValues :
-                    string.Equals(section, "Shortcuts", StringComparison.OrdinalIgnoreCase) ? shortcutValues :
-                    string.Equals(section, "nametag", StringComparison.OrdinalIgnoreCase) ? nametagValues :
-                    string.Equals(section, "Compatibility", StringComparison.OrdinalIgnoreCase) ? compatibilityValues :
-                    string.Equals(section, "fps_counter", StringComparison.OrdinalIgnoreCase) ? fpsCounterValues : null;
-                continue;
-            }
-            if (sectionValues is null) continue;
-            var separator = line.IndexOf('=');
-            if (separator <= 0) continue;
-            // The native module's INI reader uses the first occurrence of a key.
-            sectionValues.TryAdd(line[..separator].Trim(), line[(separator + 1)..].Trim());
+            var error = Marshal.GetLastWin32Error();
+            throw new InvalidOperationException(
+                $"Cannot verify {ProcessName}.exe (PID {processId}; Win32 {error}: {new Win32Exception(error).Message}).");
         }
 
-        float ReadFloat(string key, float fallback, float minimum, float maximum)
-        {
-            if (!zoomValues.TryGetValue(key, out var text)) return fallback;
-            if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ||
-                !float.IsFinite(value) || value < minimum || value > maximum)
-                throw new InvalidDataException($"Invalid value for {key}='{text}' in {path}.");
-            return value;
-        }
-        uint ReadDuration()
-        {
-            if (!zoomValues.TryGetValue("TransitionDurationMs", out var text)) return defaults.TransitionDurationMs;
-            if (!uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value is < 1 or > 10_000)
-                throw new InvalidDataException($"Invalid value for TransitionDurationMs='{text}' in {path}.");
-            return value;
-        }
-        string ReadKey(string key, string fallback) =>
-            shortcutValues.TryGetValue(key, out var value) && IsSupportedKey(value) ? value.Trim().ToUpperInvariant() :
-            shortcutValues.ContainsKey(key) ? throw new InvalidDataException($"Invalid key for {key}='{shortcutValues[key]}' in {path}.") : fallback;
+        var target = InspectProcess(queryHandle, processId);
+        EnsureSupportedTarget(target, allowUnsupportedGameVersion);
+        log($"Verified target: PID {processId}, {target.PackageFullName}, x64.");
 
-        var showFpsCounter = defaults.ShowFpsCounter;
-        if (fpsCounterValues.TryGetValue("enabled", out var enabled))
-            showFpsCounter = bool.TryParse(enabled, out var configuredShowFpsCounter) && configuredShowFpsCounter;
-
-        bool ReadBoolean(Dictionary<string, string> values, string key, bool fallback)
+        using var game = NativeMethods.OpenProcess(RequiredRemoteLoadAccess, false, processId);
+        if (game.IsInvalid)
         {
-            if (!values.TryGetValue(key, out var text)) return fallback;
-            if (bool.TryParse(text, out var value)) return value;
-            throw new InvalidDataException($"Invalid value for {key}='{text}' in {path}; expected true or false.");
+            var error = Marshal.GetLastWin32Error();
+            throw new InvalidOperationException(
+                $"Windows denied the required process access (Win32 {error}: {new Win32Exception(error).Message}). " +
+                "GameMod.dll was not loaded. Run Minecraft and the toolkit as the same Windows user.");
         }
 
-        var legacyFov = ReadFloat("Fov", defaults.FirstPersonFov, 1f, 120f);
-        var config = new ZoomConfig(ReadFloat("FirstPersonFov", legacyFov, 1f, 120f),
-            ReadFloat("ThirdPersonFov", zoomValues.ContainsKey("Fov") ? legacyFov : defaults.ThirdPersonFov, 1f, 120f),
-            ReadDuration(),
-            ReadFloat("MouseSensitivity", defaults.MouseSensitivity, 0f, 100f),
-            ReadFloat("SensitivityScalingStrength", defaults.SensitivityScalingStrength, 1f, 2f),
-            ReadKey("Zoom", defaults.Zoom), ReadKey("Nametag", defaults.Nametag),
-            ReadKey("AlwaysDay", defaults.AlwaysDay), ReadKey("FullBright", defaults.FullBright),
-            ReadKey("StatusIndicator", defaults.StatusIndicator), ReadKey("SafeDetach", defaults.SafeDetach),
-            ReadBoolean(nametagValues, "show_when_hud_hidden", defaults.ShowNametagWhenHudHidden),
-            showFpsCounter,
-            compatibilityValues.TryGetValue("AllowUnsupportedGameVersion", out var allowUnsupported) &&
-                bool.TryParse(allowUnsupported, out var allowUnsupportedVersion) && allowUnsupportedVersion,
-            ReadBoolean(zoomValues, "CameraSmoothingEnabled", defaults.CameraSmoothingEnabled),
-            ReadFloat("CameraSmoothingStrength", defaults.CameraSmoothingStrength, 1f, 10f));
-        var keys = new[] { config.Zoom, config.Nametag, config.AlwaysDay, config.FullBright, config.StatusIndicator, config.SafeDetach };
-        if (keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != keys.Length)
-            throw new InvalidDataException($"Keyboard shortcuts in {path} must be unique.");
-        return config;
-    }
+        var recheckedTarget = InspectProcess(game, processId);
+        EnsureSupportedTarget(recheckedTarget, allowUnsupportedGameVersion);
+        log("Remote-load access check passed.");
 
-    private static bool IsSupportedKey(string text)
-    {
-        var value = text.Trim().ToUpperInvariant();
-        if (value.Length == 1 && (value[0] is >= 'A' and <= 'Z' or >= '0' and <= '9')) return true;
-        if (value.Length >= 2 && value[0] == 'F' && int.TryParse(value.AsSpan(1), NumberStyles.None,
-            CultureInfo.InvariantCulture, out var functionKey) && functionKey is >= 1 and <= 24) return true;
-        return value is "SPACE" or "TAB" or "INSERT" or "HOME" or "END" or "PAGEUP" or "PAGEDOWN" or "DELETE" or "BACKSPACE";
-    }
+        var dllPath = Path.Combine(AppContext.BaseDirectory, "GameMod.dll");
+        if (!File.Exists(dllPath))
+            throw new FileNotFoundException("GameMod.dll is missing. Re-extract the complete release ZIP.", dllPath);
 
-    private static TargetInfo WaitForSupportedGame(TimeSpan timeout, bool allowUnsupportedGameVersion)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        var waitingMessageWritten = false;
+        if (!File.Exists(Path.Combine(AppContext.BaseDirectory, "zoom-pointer.ini")))
+            log("Saved pointer chain not found; using automatic FOV validation for the supported build.");
 
-        while (DateTime.UtcNow < deadline)
+        using var targetProcess = Process.GetProcessById(processId);
+        var preloadedModule = FindModule(targetProcess, "GameMod.dll");
+        if (preloadedModule is not null &&
+            !string.Equals(Path.GetFullPath(preloadedModule.FileName), dllPath, StringComparison.OrdinalIgnoreCase))
         {
-            var processes = Process.GetProcessesByName(ProcessName);
-            if (processes.Length > 0)
-            {
-                foreach (var process in processes)
-                {
-                    using (process)
-                    using (var queryHandle = NativeMethods.OpenProcess(ProcessQueryLimitedInformation, false, process.Id))
-                    {
-                        if (queryHandle.IsInvalid)
-                        {
-                            var error = Marshal.GetLastWin32Error();
-                            throw new InvalidOperationException(
-                                $"Cannot verify process {ProcessName}.exe (PID {process.Id}; Win32 {error}: {new Win32Exception(error).Message}).");
-                        }
-
-                        var candidate = InspectProcess(queryHandle, process.Id);
-                        EnsureSupportedTarget(candidate, allowUnsupportedGameVersion);
-                        return candidate;
-                    }
-                }
-            }
-
-            if (!waitingMessageWritten)
-            {
-                Console.WriteLine("Waiting for Minecraft for Windows to be started manually; the game will not be started automatically.");
-                waitingMessageWritten = true;
-            }
-
-            Thread.Sleep(1_000);
+            throw new InvalidOperationException(
+                $"GameMod.dll from another toolkit folder is already loaded: {preloadedModule.FileName}. " +
+                "Save and restart Minecraft before using this copy.");
         }
 
-        throw new TimeoutException("No supported Minecraft.Windows.exe process was found within 90 seconds.");
+        cancellationToken.ThrowIfCancellationRequested();
+        LoadAndStartModule(game, targetProcess, dllPath, preloadedModule, log);
+        log("GameMod.dll is loaded and initialization has started.");
+        foreach (var feature in new[] { "zoom", "nametag", "always-day", "full-bright" })
+            log($"Module diagnostics: {Path.Combine(AppContext.BaseDirectory, $"{feature}-status-{processId}.log")}");
     }
 
     private static TargetInfo InspectProcess(SafeProcessHandle process, int processId)
@@ -263,10 +99,10 @@ internal static class Program
             throw new InvalidOperationException($"Rejected process with unexpected path: {target.ImagePath}");
         }
 
-        if (!string.Equals(target.PackageFamilyName, ExpectedPackageFamily, StringComparison.Ordinal))
+        if (!string.Equals(target.PackageFamilyName, PackageFamily, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"Rejected package family '{target.PackageFamilyName}'; expected '{ExpectedPackageFamily}'. The module was not loaded.");
+                $"Rejected package family '{target.PackageFamilyName}'; expected '{PackageFamily}'. The module was not loaded.");
         }
 
         if (!allowUnsupportedGameVersion &&
@@ -274,7 +110,7 @@ internal static class Program
         {
             throw new InvalidOperationException(
                 $"Unsupported game package. Found '{target.PackageFullName}' (family '{target.PackageFamilyName}'); " +
-                $"expected '{ExpectedPackageFullName}' (family '{ExpectedPackageFamily}'). The module was not loaded.");
+                $"expected '{ExpectedPackageFullName}' (family '{PackageFamily}'). The module was not loaded. Use a toolkit release that supports your installed game version.");
         }
 
         var isNativeX64 = target.ProcessMachine == ImageFileMachineUnknown && target.NativeMachine == ImageFileMachineAmd64;
@@ -325,7 +161,7 @@ internal static class Program
         return buffer.ToString();
     }
 
-    private static void LoadAndStartModule(SafeProcessHandle game, Process targetProcess, string dllPath, ProcessModule? preloadedModule)
+    private static void LoadAndStartModule(SafeProcessHandle game, Process targetProcess, string dllPath, ProcessModule? preloadedModule, Action<string> log)
     {
         var localModule = NativeMethods.LoadLibraryW(dllPath);
         if (localModule == IntPtr.Zero)
@@ -428,12 +264,12 @@ internal static class Program
                     {
                         if (!NativeMethods.VirtualFreeEx(game, remotePath, UIntPtr.Zero, MemRelease))
                         {
-                            Console.Error.WriteLine($"Warning: could not free the temporary path buffer (Win32 {Marshal.GetLastWin32Error()}).");
+                            log($"Warning: could not free the temporary path buffer (Win32 {Marshal.GetLastWin32Error()}).");
                         }
                     }
                     else
                     {
-                        Console.Error.WriteLine("The load thread did not finish; its buffer is being retained to avoid using freed memory.");
+                        log("The load thread did not finish; its buffer is being retained to avoid using freed memory.");
                     }
                 }
 
@@ -442,7 +278,7 @@ internal static class Program
             }
             else
             {
-                Console.WriteLine("GameMod.dll is already loaded from the same path in the process; proceeding with initialization only.");
+                log("GameMod.dll is already loaded from the same path in the process; proceeding with initialization only.");
             }
 
             var remoteStart = RelocateAddress(targetProcess, localStart);
@@ -460,7 +296,7 @@ internal static class Program
                     out startThreadFinished);
                 if (startExitCode == 2)
                 {
-                    Console.WriteLine("The module is already running; Zoom preparation and state are preserved.");
+                    log("The module is already running; Zoom preparation and state are preserved.");
                 }
                 else if (startExitCode != 1)
                 {
@@ -473,7 +309,7 @@ internal static class Program
             {
                 if (startThreadCreated && !startThreadFinished)
                 {
-                    Console.Error.WriteLine("The initialization thread may still be running; the DLL was not unloaded to avoid canceling running code.");
+                    log("The initialization thread may still be running; the DLL was not unloaded to avoid canceling running code.");
                 }
 
                 throw;
@@ -491,7 +327,7 @@ internal static class Program
                 Thread.Sleep(100);
             } while (preparation.Elapsed < TimeSpan.FromSeconds(2));
 
-            Console.WriteLine(readiness switch
+            log(readiness switch
             {
                 2 => $"Zoom ready: a unique FOV entry was verified (check took {preparation.ElapsedMilliseconds} ms).",
                 3 => "Zoom is refusing writes for now: the target is not uniquely verified. See the diagnostic log for details; transient failures are retried automatically.",
@@ -499,7 +335,7 @@ internal static class Program
             });
             var nametagReadiness = RunRemoteThread(game, RelocateAddress(targetProcess, localNametagReadiness),
                 IntPtr.Zero, "GetNametagReadiness", out _, out _);
-            Console.WriteLine(nametagReadiness switch
+            log(nametagReadiness switch
             {
                 2 => "Nametag ready and enabled by default; its configured key toggles it.",
                 3 => "Nametag rejected: the native rendering profile was not safely verified or prepared. See the log for details.",
@@ -507,7 +343,7 @@ internal static class Program
             });
             var dayReadiness = RunRemoteThread(game, RelocateAddress(targetProcess, localDayReadiness),
                 IntPtr.Zero, "GetAlwaysDayReadiness", out _, out _);
-            Console.WriteLine(dayReadiness switch
+            log(dayReadiness switch
             {
                 2 => "Always day: rendering profile ready and enabled by default. In-game behavior awaits verification.",
                 3 => "Always day rejected: profile validation or safe installation failed. See the log for details.",
@@ -515,7 +351,7 @@ internal static class Program
             });
             var brightReadiness = RunRemoteThread(game, RelocateAddress(targetProcess, localBrightReadiness),
                 IntPtr.Zero, "GetFullBrightReadiness", out _, out _);
-            Console.WriteLine(brightReadiness switch
+            log(brightReadiness switch
             {
                 2 => "Full Bright: rendering profile ready and enabled by default. The result awaits in-game verification.",
                 3 => "Full Bright rejected: profile validation or safe installation failed. See the log for details.",

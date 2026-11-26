@@ -185,6 +185,13 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Launcher publish failed with exit code $LASTEXITCODE."
     }
+    if ($Test) {
+        $settingsTests = Join-Path $repoRoot 'tests\LauncherSettingsTests\LauncherSettingsTests.csproj'
+        & dotnet restore $settingsTests --configfile $nugetConfig
+        if ($LASTEXITCODE -ne 0) { throw "Launcher settings test restore failed: $LASTEXITCODE" }
+        & dotnet run --project $settingsTests --configuration Release --no-restore
+        if ($LASTEXITCODE -ne 0) { throw "Launcher settings tests failed: $LASTEXITCODE" }
+    }
 }
 finally {
     foreach ($name in $previousEnvironment.Keys) {

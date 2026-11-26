@@ -9,6 +9,7 @@
 #include <cwchar>
 #include <iterator>
 #include <string>
+#include "ToolkitIni.h"
 
 namespace fpscounter
 {
@@ -19,7 +20,7 @@ namespace fpscounter
     constexpr int kMinimumFontSize = 12;
     constexpr int kMaximumFontSize = 48;
 
-    inline bool LoadEnabled(const std::wstring& path)
+    inline bool LoadProfileEnabled(const std::wstring& path)
     {
         wchar_t value[16]{};
         const DWORD length = GetPrivateProfileStringW(L"fps_counter", L"enabled", L"",
@@ -41,17 +42,45 @@ namespace fpscounter
         return _wcsicmp(text.substr(first, last - first + 1).c_str(), L"true") == 0;
     }
 
-    inline int LoadFontSize(const std::wstring& path)
+    inline int ParseFontSize(const wchar_t* value)
     {
-        wchar_t value[16]{};
-        const DWORD length = GetPrivateProfileStringW(L"fps_counter", L"font_size", L"28",
-            value, static_cast<DWORD>(std::size(value)), path.c_str());
-        if (length == 0 || length >= std::size(value) - 1) return kDefaultFontSize;
         wchar_t* end = nullptr;
         const long parsed = std::wcstol(value, &end, 10);
         while (end != nullptr && (*end == L' ' || *end == L'\t' || *end == L'\r' || *end == L'\n')) ++end;
         return end == value || end == nullptr || *end != L'\0' ||
             parsed < kMinimumFontSize || parsed > kMaximumFontSize ? kDefaultFontSize : static_cast<int>(parsed);
+    }
+
+    inline int LoadProfileFontSize(const std::wstring& path)
+    {
+        wchar_t value[16]{};
+        const DWORD length = GetPrivateProfileStringW(L"fps_counter", L"font_size", L"28",
+            value, static_cast<DWORD>(std::size(value)), path.c_str());
+        if (length == 0 || length >= std::size(value) - 1) return kDefaultFontSize;
+        return ParseFontSize(value);
+    }
+
+    struct Settings
+    {
+        bool enabled = true;
+        int fontSize = kDefaultFontSize;
+    };
+
+    inline Settings LoadSettings(const std::wstring& path)
+    {
+        std::wstring decoded;
+        if (!toolkitini::ReadUtf8BomConfig(path, decoded))
+            return {false, kDefaultFontSize};
+        if (decoded.empty())
+            return {LoadProfileEnabled(path), LoadProfileFontSize(path)};
+
+        Settings result;
+        std::wstring value;
+        if (toolkitini::ReadDecodedConfigValue(decoded, L"fps_counter", L"enabled", value))
+            result.enabled = _wcsicmp(value.c_str(), L"true") == 0;
+        if (toolkitini::ReadDecodedConfigValue(decoded, L"fps_counter", L"font_size", value))
+            result.fontSize = ParseFontSize(value.c_str());
+        return result;
     }
 
     inline int FpsValue(uint64_t frames, ULONGLONG elapsedMs)
@@ -316,8 +345,9 @@ namespace fpscounter
                 const ULONGLONG now = GetTickCount64();
                 if (lastConfigRead == 0 || now - lastConfigRead >= 500)
                 {
-                    enabled_.store(LoadEnabled(configPath_));
-                    const int nextFontSize = LoadFontSize(configPath_);
+                    const auto settings = LoadSettings(configPath_);
+                    enabled_.store(settings.enabled);
+                    const int nextFontSize = settings.fontSize;
                     if (!fontConfigurationRead || nextFontSize != fontSize)
                     {
                         if (font != nullptr) DeleteObject(font);

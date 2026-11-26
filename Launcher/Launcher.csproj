@@ -1,12 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWPF>true</UseWPF>
     <SelfContained>false</SelfContained>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>Launcher</AssemblyName>
+    <Product>Bedrock Local Toolkit</Product>
+    <AssemblyTitle>Bedrock Local Toolkit</AssemblyTitle>
+    <ApplicationIcon>Toolkit.ico</ApplicationIcon>
     <RootNamespace>MinecraftClient.Launcher</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Toolkit.ico" />
+  </ItemGroup>
 </Project>

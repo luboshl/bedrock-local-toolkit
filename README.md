@@ -36,8 +36,22 @@ Always day and Full Bright are enabled automatically after their profiles are ve
 
 | Control | Key (default) | Behavior |
 | --- | --- | --- |
-| Status indicator | F9 | Shows or hides the local status indicator. |
+| Client Menu | K or F9 | Shows local status, module switches, and settings over the game window. |
 | Safe detach | F10 | Restores modified values and hooks, then detaches the module when restoration is safe. |
+
+Open **Client Menu** during gameplay with **K**. Use **Up / Down** to select a row,
+**Enter** to toggle a module, **Left / Right** to change a number, and **Esc** or
+the menu shortcut to close. The menu also opens with the existing
+`[Shortcuts] StatusIndicator` key (F9 by default). If another shortcut already
+uses K, use this alternate key. The menu closes when gameplay or focus is lost.
+It runs locally and requires no server pack. The toolkit's gameplay features
+remain supported only in local single-player worlds.
+
+Zoom, Nametag, Always day, and Full Bright switches apply for the current
+session. Menu settings are saved to `bedrock-toolkit.ini`. Zoom settings apply
+after restarting the module. Nametag's HUD setting applies immediately, and
+FPS counter changes apply on its next configuration refresh. The menu can
+read existing UTF-8 INI files with a BOM, but cannot save changes into them.
 
 Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Set `FirstPersonFov` and `ThirdPersonFov` separately under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script installs this default configuration next to the launcher without overwriting an existing one. To reset settings to defaults, remove `bedrock-toolkit.ini` next to the launcher and rebuild; missing settings also use the defaults. The older `Fov` setting remains supported as a fallback for both perspectives.
 
@@ -57,7 +71,7 @@ enabled=true
 font_size=28
 ```
 
-Set `enabled=false` to hide it or adjust `font_size` from 12 to 48. Both settings reload within about half a second without restarting the client or module; missing or invalid font sizes use 28, while invalid enabled values disable the counter. The counter is independent of F9 and appears only during foreground gameplay, including F1-hidden HUD. It counts calls to the supported build's game update function once per second. It uses installed Minecraftia or privately loads Minecraft's own `data\fonts\Mojangles.ttf`; no fonts are bundled or downloaded. If neither font is available, the counter remains hidden.
+Set `enabled=false` to hide it or adjust `font_size` from 12 to 48. Both settings reload within about half a second without restarting the client or module; missing or invalid font sizes use 28, while invalid enabled values disable the counter. The counter appears during foreground gameplay, including F1-hidden HUD, and hides while Client Menu is open. It counts calls to the supported build's game update function once per second. It uses installed Minecraftia or privately loads Minecraft's own `data\fonts\Mojangles.ttf`; no fonts are bundled or downloaded. If neither font is available, the counter remains hidden.
 
 Version checking is strict by default. To let the launcher attempt to start with a different Minecraft package version, add:
 

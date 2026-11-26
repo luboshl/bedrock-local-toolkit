@@ -1,0 +1,123 @@
+<Window x:Class="MinecraftClient.Launcher.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Bedrock Local Toolkit" Icon="Toolkit.ico"
+        Width="820" Height="690" MinWidth="620" MinHeight="460"
+        WindowStartupLocation="CenterScreen" UseLayoutRounding="True"
+        ContentRendered="OnContentRendered" Closing="OnClosing">
+    <Window.Resources>
+        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Padding" Value="13,6" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+        </Style>
+        <Style x:Key="SectionHeading" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
+        <Style x:Key="HelpText" TargetType="TextBlock">
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+        <DataTemplate x:Key="SettingRow">
+            <StackPanel Margin="0,0,0,8">
+                <DockPanel LastChildFill="True" x:Name="TextField">
+                    <TextBox x:Name="Input" DockPanel.Dock="Right" MinWidth="84" Padding="4,2"
+                             AutomationProperties.AutomationId="{Binding Key}"
+                             Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}" />
+                    <Label Target="{Binding ElementName=Input}" Padding="0,3,8,0">
+                        <TextBlock Text="{Binding Label}" TextWrapping="Wrap" />
+                    </Label>
+                </DockPanel>
+                <CheckBox x:Name="ToggleField" Visibility="Collapsed" IsThreeState="False"
+                          AutomationProperties.AutomationId="{Binding Key}"
+                          IsChecked="{Binding Checked, Mode=TwoWay}">
+                    <TextBlock Text="{Binding Label}" TextWrapping="Wrap" />
+                </CheckBox>
+                <TextBlock x:Name="FieldError" Text="{Binding Error}" TextWrapping="Wrap"
+                           Margin="0,3,0,0" FontWeight="SemiBold"
+                           AutomationProperties.LiveSetting="Polite" />
+            </StackPanel>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsToggle}" Value="True">
+                    <Setter TargetName="TextField" Property="Visibility" Value="Collapsed" />
+                    <Setter TargetName="ToggleField" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Error}" Value="">
+                    <Setter TargetName="FieldError" Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid Margin="20" KeyboardNavigation.TabNavigation="Cycle">
+        <TabControl x:Name="Views">
+            <TabItem Header="_Startup">
+                <StackPanel Margin="22">
+                    <TextBlock Text="Minecraft for Windows" FontSize="24" FontWeight="SemiBold"
+                               Margin="0,0,0,14" />
+                    <TextBlock x:Name="StartupHeading" Text="Starting the toolkit…" FontSize="16"
+                               FontWeight="SemiBold" />
+                    <TextBlock x:Name="StartupDetail" TextWrapping="Wrap" Margin="0,6,0,12"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <ProgressBar x:Name="StartupProgress" Height="5" Width="200"
+                                 HorizontalAlignment="Left" IsIndeterminate="True" Margin="0,0,0,12" />
+                    <TextBlock Text="Use the toolkit in local single-player worlds." Style="{StaticResource HelpText}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <Button x:Name="RetryButton" Content="_Retry" Visibility="Collapsed" Click="OnRetry" />
+                        <Button Content="Open _Log" Click="OnOpenLog" />
+                        <Button Content="Add to _Start menu" Click="OnAddToStartMenu" />
+                    </StackPanel>
+                    <TextBlock x:Name="ShellFeedback" TextWrapping="Wrap" Margin="0,8,0,0"
+                               AutomationProperties.LiveSetting="Polite" />
+                </StackPanel>
+            </TabItem>
+            <TabItem x:Name="SettingsTab" Header="S_ettings">
+                <Grid Margin="14">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <Grid x:Name="SettingsContent" Margin="4,4,12,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="24" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Shortcuts" Style="{StaticResource SectionHeading}" />
+                                <TextBlock x:Name="ShortcutHelp" Style="{StaticResource HelpText}" />
+                                <ItemsControl x:Name="ShortcutFields" ItemTemplate="{StaticResource SettingRow}" />
+                                <TextBlock Text="HUD and FPS" Style="{StaticResource SectionHeading}" Margin="0,14,0,8" />
+                                <ItemsControl x:Name="NametagFields" ItemTemplate="{StaticResource SettingRow}" />
+                                <TextBlock Text="FPS counter settings apply live within about half a second."
+                                           Style="{StaticResource HelpText}" />
+                                <ItemsControl x:Name="FpsFields" ItemTemplate="{StaticResource SettingRow}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="Zoom" Style="{StaticResource SectionHeading}" />
+                                <ItemsControl x:Name="ZoomFields" ItemTemplate="{StaticResource SettingRow}" />
+                                <TextBlock Text="Compatibility" Style="{StaticResource SectionHeading}" Margin="0,14,0,8" />
+                                <ItemsControl x:Name="CompatibilityFields" ItemTemplate="{StaticResource SettingRow}" />
+                                <TextBlock Text="Strict version checking is the default. This option skips exact build identity checks only. Package, architecture and feature validation still apply."
+                                           Style="{StaticResource HelpText}" />
+                            </StackPanel>
+                        </Grid>
+                    </ScrollViewer>
+                    <StackPanel Grid.Row="1" Margin="4,12,4,0">
+                        <TextBlock Text="Shortcuts, Zoom, nametag and compatibility changes apply when the module restarts."
+                                   Style="{StaticResource HelpText}" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="SaveButton" Content="_Save settings" Click="OnSaveSettings" />
+                            <Button Content="Re_load from disk" Click="OnReloadSettings" />
+                        </StackPanel>
+                        <TextBlock x:Name="SettingsFeedback" TextWrapping="Wrap" Margin="0,8,0,0"
+                                   AutomationProperties.LiveSetting="Polite" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>

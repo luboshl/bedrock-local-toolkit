@@ -342,36 +342,44 @@ namespace
     void TestFpsCounterConfig()
     {
         TemporaryToolkitConfig config;
-        Check(fpscounter::LoadEnabled(config.Path()), "FPS counter is enabled by default");
-        Check(fpscounter::LoadFontSize(config.Path()) == fpscounter::kDefaultFontSize,
+        Check(fpscounter::LoadSettings(config.Path()).enabled, "FPS counter is enabled by default");
+        Check(fpscounter::LoadSettings(config.Path()).fontSize == fpscounter::kDefaultFontSize,
             "FPS font size has a readable default");
         config.Set(L"FPS_COUNTER", L"ENABLED", L" false ");
-        Check(!fpscounter::LoadEnabled(config.Path()), "FPS counter accepts case and surrounding whitespace");
+        Check(!fpscounter::LoadSettings(config.Path()).enabled, "FPS counter accepts case and surrounding whitespace");
         config.Set(L"fps_counter", L"enabled", L"true");
         config.Set(L"fps_counter", L"font_size", L"36");
         config.Set(L"Zoom", L"FirstPersonFov", L"invalid");
         const ZoomConfig original = g_zoomConfig;
-        Check(fpscounter::LoadEnabled(config.Path()) && fpscounter::LoadFontSize(config.Path()) == 36 &&
+        Check(fpscounter::LoadSettings(config.Path()).enabled && fpscounter::LoadSettings(config.Path()).fontSize == 36 &&
             g_zoomConfig.firstPersonFov == original.firstPersonFov &&
             g_zoomConfig.zoomKey == original.zoomKey,
             "live FPS settings are independent of restart-only Zoom and shortcut settings");
         config.Set(L"fps_counter", L"font_size", L"12");
-        Check(fpscounter::LoadFontSize(config.Path()) == 12, "FPS font size accepts its minimum");
+        Check(fpscounter::LoadSettings(config.Path()).fontSize == 12, "FPS font size accepts its minimum");
         config.Set(L"fps_counter", L"font_size", L"48");
-        Check(fpscounter::LoadFontSize(config.Path()) == 48, "FPS font size accepts its maximum");
+        Check(fpscounter::LoadSettings(config.Path()).fontSize == 48, "FPS font size accepts its maximum");
         for (const wchar_t* invalid : {L"", L"11", L"49", L"36px", L"invalid"})
         {
             config.Set(L"fps_counter", L"font_size", invalid);
-            Check(fpscounter::LoadFontSize(config.Path()) == fpscounter::kDefaultFontSize,
+            Check(fpscounter::LoadSettings(config.Path()).fontSize == fpscounter::kDefaultFontSize,
                 "invalid FPS font size uses the default");
         }
         for (const wchar_t* invalid : {L"", L"yes", L"1", L"true-but-truncated", L"invalid"})
         {
             config.Set(L"fps_counter", L"enabled", invalid);
-            Check(!fpscounter::LoadEnabled(config.Path()), "invalid FPS counter boolean fails closed");
+            Check(!fpscounter::LoadSettings(config.Path()).enabled, "invalid FPS counter boolean fails closed");
         }
         config.Set(L"fps_counter", L"enabled", nullptr);
-        Check(fpscounter::LoadEnabled(config.Path()), "removed FPS counter setting uses the enabled default");
+        Check(fpscounter::LoadSettings(config.Path()).enabled, "removed FPS counter setting uses the enabled default");
+
+        TemporaryToolkitConfig utf8Config;
+        std::ofstream file(utf8Config.Path(), std::ios::binary);
+        file << "\xEF\xBB\xBF" "[fps_counter]\r\nenabled=false\r\nfont_size=36\r\n";
+        file.close();
+        const auto settings = fpscounter::LoadSettings(utf8Config.Path());
+        Check(file.good() && !settings.enabled && settings.fontSize == 36,
+            "load live FPS settings when the first section follows a UTF-8 BOM");
     }
 
     void TestFpsCounterPresentation()

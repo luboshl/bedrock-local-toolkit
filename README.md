@@ -53,7 +53,7 @@ after restarting the module. Nametag's HUD setting applies immediately, and
 FPS counter changes apply on its next configuration refresh. The menu can
 read existing UTF-8 INI files with a BOM, but cannot save changes into them.
 
-Zoom settings and keyboard shortcuts are configurable in [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Set `FirstPersonFov` and `ThirdPersonFov` separately under `[Zoom]`; feature shortcuts belong under `[Shortcuts]` and must be distinct. The build script installs this default configuration next to the launcher without overwriting an existing one. To reset settings to defaults, remove `bedrock-toolkit.ini` next to the launcher and rebuild; missing settings also use the defaults. The older `Fov` setting remains supported as a fallback for both perspectives.
+Open **Settings** in Bedrock Local Toolkit to edit shortcuts, Zoom, Nametag, the FPS counter, and experimental compatibility. The editor updates `bedrock-toolkit.ini` next to the launcher and keeps other entries and comments. Manual edits use the same format as [`config/bedrock-toolkit.ini`](config/bedrock-toolkit.ini). Use **Reload from disk** to pick up external edits while the window is open. FPS counter settings apply live. For the other settings, restart the module by using Safe detach in gameplay, then close and reopen the toolkit. Restarting both Minecraft and the toolkit also applies the changes. The build script copies the packaged default INI only when the destination has no INI. Individual missing settings use their built-in defaults, and the older `Fov` setting remains a fallback for both perspectives.
 
 Under `[Zoom]`, `SensitivityScalingStrength` accepts values from 1 to 2 and defaults to `1.5`, including for existing configurations. Use `1` for the original optical curve or increase it for finer control at low FOV. For a normal FOV of 70°, the default gives about one ninth of the previous sensitivity at 1°. `MouseSensitivity` (0–100, default `45`) sets the percentage of the curve used at 1°. If a key appears more than once in a section, its first value takes precedence. Zooming out smoothly restores the player's original sensitivity. GameInput cumulative mouse coordinates remain unchanged so small input deltas are never discarded by scaling or rounding. If the sensitivity option cannot be uniquely verified, Zoom continues without changing it.
 
@@ -96,16 +96,19 @@ The launcher checks the exact game build and rejects unsupported versions by def
 
 To use a prebuilt package, download a `win-x64` ZIP from [GitHub Releases](https://github.com/luboshl/bedrock-local-toolkit/releases). If no release is published yet, follow the source build steps below.
 
-1. Download the `win-x64` ZIP for the release and extract its contents into a folder.
-2. Install the .NET 10 runtime if it is not already installed.
-3. Start Minecraft Bedrock, then run `Launcher.exe` from the extracted folder.
+1. Download the `win-x64` ZIP and extract it into a permanent, writable folder.
+2. Install the [x64 .NET 10 Desktop Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0) and Minecraft for Windows if needed.
+3. Double-click `Launcher.exe` in File Explorer. The toolkit opens in its own window and starts Minecraft for Windows or reuses the running session. If startup fails, follow the message in **Startup**, then select **Retry**. Use **Open Log** for launcher diagnostics. Closing the toolkit leaves Minecraft running.
+
+To pin the toolkit, right-click its open taskbar icon and choose **Pin to taskbar**. Or select **Add to Start menu** in the toolkit, search Start for **Bedrock Local Toolkit**, then right-click the result to pin it. Both shortcuts point to the extracted copy.
+
+To update in place, close the toolkit and Minecraft. Extract the new ZIP into a temporary folder and copy its files over the original installation, keeping the original `bedrock-toolkit.ini`. The existing shortcuts still point to the same `Launcher.exe`. The release INI is available in the temporary folder if you want to compare defaults.
 
 Alternatively, build the project locally:
 
 1. Install the [build requirements](#build-from-source).
 2. Run the build and test command below.
-3. Start Minecraft Bedrock.
-4. Run `artifacts\launcher\Launcher.exe`.
+3. Run `artifacts\launcher\Launcher.exe`.
 
 The launcher rejects game builds other than the one listed above by default. The optional `[Compatibility] AllowUnsupportedGameVersion=true` setting permits an experimental attempt, but does not provide compatibility or bypass feature profile checks. Do not use the add-on in multiplayer or on a world you are not willing to use with unsupported software.
 
@@ -123,7 +126,7 @@ From the repository root, run:
 .\build.ps1 -Test
 ```
 
-This builds the C++ game module and C# launcher, then runs the isolated automated tests. Tests cover implementation details against synthetic memory; passing tests do not prove that behavior works in a live game. See [`SPECIFICATION.md`](SPECIFICATION.md) for the security requirements and verification boundaries.
+This builds the C++ game module and C# launcher, then runs the isolated automated tests. The tests cover launcher settings and native behavior against synthetic memory. See [`SPECIFICATION.md`](SPECIFICATION.md) for the security requirements and live verification boundaries.
 
 The gameplay/Zoom stutter fix uses precise animation timing, removes synchronous input diagnostics and repeated hook scans, and limits indicator redraws. Low-FOV Zoom adjusts the verified sensitivity option using the configured projection-based curve while preserving cumulative mouse readings (issues #50 and #55). Isolated tests cover the projection-based sensitivity curve, transition timing, sensitivity restoration, and deferred diagnostics; smooth camera movement at FOV 1 still needs an in-game retest (issues #30, #50, and #55).
 
@@ -136,7 +139,7 @@ git tag -a v1.0.0 -m "v1.0.0"
 git push origin v1.0.0
 ```
 
-The `Create Release Tag` workflow also accepts prerelease versions such as `1.0.7-pre01`; it adds the `v` prefix and creates a draft prerelease. The workflow builds and tests the project, then creates a draft GitHub Release with generated notes and a `win-x64` ZIP containing the launcher and its required files. Review the draft and its asset on GitHub, then publish it when ready. The ZIP contains the framework-dependent launcher, which requires the .NET 10 runtime.
+The `Create Release Tag` workflow also accepts prerelease versions such as `1.0.7-pre01`; it adds the `v` prefix and creates a draft prerelease. The workflow builds and tests the project, then creates a draft GitHub Release with generated notes and a `win-x64` ZIP containing the launcher and its required files. Review the draft and its asset on GitHub, then publish it when ready. The ZIP contains the framework-dependent WPF launcher, which requires the x64 .NET 10 Desktop Runtime.
 
 ## Continuous integration
 

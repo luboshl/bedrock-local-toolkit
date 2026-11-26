@@ -7,6 +7,7 @@ namespace MinecraftClient.Launcher;
 
 public partial class MainWindow : Window
 {
+    private readonly CancellationTokenSource windowLifetime = new();
     private ToolkitSettings? settings;
     private CancellationTokenSource? startup;
     private bool closeRequested;
@@ -34,7 +35,7 @@ public partial class MainWindow : Window
         await StartGameAsync();
     }
 
-    private async void OnRetry(object sender, RoutedEventArgs e) => await StartGameAsync();
+    private async void OnGameAction(object sender, RoutedEventArgs e) => await StartGameAsync();
 
     private async Task StartGameAsync()
     {
@@ -44,7 +45,7 @@ public partial class MainWindow : Window
         using var operation = new CancellationTokenSource();
         startup = operation;
         SaveButton.IsEnabled = false;
-        RetryButton.Visibility = Visibility.Collapsed;
+        SetGameAction("Starting Minecraft…", enabled: false);
         StartupHeading.Text = "Starting the toolkit…";
         StartupDetail.Text = "";
         StartupProgress.Visibility = Visibility.Visible;
@@ -55,21 +56,24 @@ public partial class MainWindow : Window
         });
         try
         {
-            StartupDetail.Text = await GameStartup.RunAsync(progress, operation.Token);
-            StartupHeading.Text = "Module started";
+            var (game, message) = await GameStartup.RunAsync(progress, operation.Token);
+            StartupHeading.Text = "Minecraft is running";
+            StartupDetail.Text = message;
+            SetGameAction("Minecraft is running", enabled: false);
+            _ = WatchGameExitAsync(game, windowLifetime.Token);
         }
         catch (OperationCanceledException) when (operation.IsCancellationRequested)
         {
             StartupHeading.Text = "Startup canceled";
             StartupDetail.Text = "Select Retry to start the toolkit.";
-            RetryButton.Visibility = Visibility.Visible;
+            SetGameAction("_Retry", enabled: true);
         }
         catch (Exception ex)
         {
             var logged = LauncherLog.Write($"Startup failed: {ex}");
             StartupHeading.Text = "Startup failed";
             StartupDetail.Text = logged ? ex.Message : $"{ex.Message} The launcher log could not be written.";
-            RetryButton.Visibility = Visibility.Visible;
+            SetGameAction("_Retry", enabled: true);
         }
         finally
         {
@@ -79,6 +83,40 @@ public partial class MainWindow : Window
             if (closeRequested)
                 Close();
         }
+    }
+
+    private async Task WatchGameExitAsync(Process game, CancellationToken cancellationToken)
+    {
+        using (game)
+        {
+            try
+            {
+                await game.WaitForExitAsync(cancellationToken);
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+
+                LauncherLog.Write($"Minecraft session ended (PID {game.Id}).");
+                StartupHeading.Text = "Minecraft session ended";
+                StartupDetail.Text = "Select Start Minecraft to launch a new session with the toolkit.";
+                SetGameAction("Start _Minecraft", enabled: true);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                LauncherLog.Write($"Could not monitor the Minecraft session: {ex}");
+                StartupHeading.Text = "Minecraft status unavailable";
+                StartupDetail.Text = "Select Retry to check the current game session.";
+                SetGameAction("_Retry", enabled: true);
+            }
+        }
+    }
+
+    private void SetGameAction(string text, bool enabled)
+    {
+        GameActionButton.Content = text;
+        GameActionButton.IsEnabled = enabled;
     }
 
     private void OnClosing(object? sender, CancelEventArgs e)
@@ -91,6 +129,13 @@ public partial class MainWindow : Window
         closeRequested = true;
         Hide();
         startup.Cancel();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        windowLifetime.Cancel();
+        windowLifetime.Dispose();
+        base.OnClosed(e);
     }
 
     private void OnOpenLog(object sender, RoutedEventArgs e)

@@ -9,7 +9,8 @@ internal static class GameStartup
     private const string GameAppId = GameModuleLauncher.PackageFamily + "!Game";
     private static readonly TimeSpan GameWait = TimeSpan.FromSeconds(90);
 
-    internal static Task<string> RunAsync(IProgress<string> progress, CancellationToken cancellationToken) =>
+    internal static Task<(Process Process, string Message)> RunAsync(
+        IProgress<string> progress, CancellationToken cancellationToken) =>
         Task.Run(async () =>
         {
             void Report(string message)
@@ -38,13 +39,24 @@ internal static class GameStartup
             if (settings.AllowUnsupportedVersion)
                 LauncherLog.Write("Experimental compatibility enabled. Feature validation remains mandatory.");
 
-            Report("Verifying the game and starting the toolkit module…");
-            GameModuleLauncher.Start(processId, settings.AllowUnsupportedVersion,
-                message => LauncherLog.Write(message), cancellationToken);
+            var game = Process.GetProcessById(processId);
+            try
+            {
+                // Watch this process before initialization so an earlier exit is also observed.
+                game.EnableRaisingEvents = true;
+                Report("Verifying the game and starting the toolkit module…");
+                GameModuleLauncher.Start(processId, settings.AllowUnsupportedVersion,
+                    message => LauncherLog.Write(message), cancellationToken);
 
-            return reused
-                ? "The toolkit module started or was already running in the existing Minecraft session."
-                : "Minecraft opened and the toolkit module started.";
+                return (game, reused
+                    ? "The toolkit module started or was already running in the existing Minecraft session."
+                    : "Minecraft opened and the toolkit module started.");
+            }
+            catch
+            {
+                game.Dispose();
+                throw;
+            }
         }, cancellationToken);
 
     private static bool HasRunningGame() => FindGameProcesses(needsWindow: false).Length > 0;

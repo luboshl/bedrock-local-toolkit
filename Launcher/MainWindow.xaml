@@ -65,7 +65,8 @@
                                  HorizontalAlignment="Left" IsIndeterminate="True" Margin="0,0,0,12" />
                     <TextBlock Text="Use the toolkit in local single-player worlds." Style="{StaticResource HelpText}" />
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                        <Button x:Name="RetryButton" Content="_Retry" Visibility="Collapsed" Click="OnRetry" />
+                        <Button x:Name="GameActionButton" Content="Starting Minecraft…" MinWidth="165"
+                                IsEnabled="False" Click="OnGameAction" />
                         <Button Content="Open _Log" Click="OnOpenLog" />
                         <Button Content="Add to _Start menu" Click="OnAddToStartMenu" />
                     </StackPanel>

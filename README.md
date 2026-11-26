@@ -100,6 +100,8 @@ To use a prebuilt package, download a `win-x64` ZIP from [GitHub Releases](https
 2. Install the [x64 .NET 10 Desktop Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0) and Minecraft for Windows if needed.
 3. Double-click `Launcher.exe` in File Explorer. The toolkit opens in its own window and starts Minecraft for Windows or reuses the running session. If startup fails, follow the message in **Startup**, then select **Retry**. Use **Open Log** for launcher diagnostics. Closing the toolkit leaves Minecraft running.
 
+While the game runs, **Minecraft is running** is disabled on the **Startup** tab. When Minecraft closes, the button changes to **Start Minecraft** so you can launch it again from the same window.
+
 To pin the toolkit, right-click its open taskbar icon and choose **Pin to taskbar**. Or select **Add to Start menu** in the toolkit, search Start for **Bedrock Local Toolkit**, then right-click the result to pin it. Both shortcuts point to the extracted copy.
 
 To update in place, close the toolkit and Minecraft. Extract the new ZIP into a temporary folder and copy its files over the original installation, keeping the original `bedrock-toolkit.ini`. The existing shortcuts still point to the same `Launcher.exe`. The release INI is available in the temporary folder if you want to compare defaults.

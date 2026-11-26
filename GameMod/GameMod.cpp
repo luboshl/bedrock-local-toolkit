@@ -202,9 +202,15 @@ namespace
         zoom.transitionTargetProjection = LogFovProjection(target);
         const double distance = std::abs(zoom.transitionTargetProjection - zoom.transitionStartProjection);
         // Give every visible step at least the configured time and extend larger moves
-        // in proportion to the change in magnification.
-        zoom.transitionDurationMs = distance == 0 ? 0 : static_cast<double>(g_zoomConfig.transitionDurationMs) *
-            (std::max)(1.0, distance / zoom.transitionReferenceDistance);
+        // in proportion to the change in magnification. Restoration uses a shorter
+        // scale so deep wheel zooms begin returning promptly without an abrupt snap.
+        constexpr double kZoomRestoreDurationScale = 0.65;
+        const double magnificationScale = distance / zoom.transitionReferenceDistance;
+        const double durationScale = restoring ?
+            (std::max)(1.0, magnificationScale * kZoomRestoreDurationScale) :
+            (std::max)(1.0, magnificationScale);
+        zoom.transitionDurationMs = distance == 0 ? 0 :
+            static_cast<double>(g_zoomConfig.transitionDurationMs) * durationScale;
         zoom.transitionStartedAt = startedAt;
         zoom.transitionActive = true;
         zoom.restoring = restoring;

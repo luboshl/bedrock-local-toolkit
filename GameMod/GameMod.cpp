@@ -11,7 +11,9 @@
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
+#include <fstream>
 #include <iterator>
+#include <sstream>
 #include <intrin.h>
 #include <limits>
 #include <optional>
@@ -249,6 +251,7 @@ namespace
         uintptr_t optionsSlotAddress = 0;
         bool bindingLost = false;
         bool targetInvalidated = false;
+        uintptr_t wrapper = 0;
     };
 
     struct FovPointerConfig
@@ -598,8 +601,57 @@ namespace
         return true;
     }
 
+    bool ReadMouseSensitivityEntry(uintptr_t wrapper, uintptr_t& address, float& value)
+    {
+        // The named option stores one float per input mode in a circular list.
+        constexpr uintptr_t kListOffset = 0x20;
+        constexpr uintptr_t kValueOffset = 0x14;
+        constexpr uint32_t kMouseMode = 1;
+        struct Entry
+        {
+            uintptr_t next;
+            uintptr_t previous;
+            uint32_t mode;
+            float value;
+        };
+        static_assert(offsetof(Entry, value) == kValueOffset);
+        uintptr_t list[2]{};
+        if (wrapper > (std::numeric_limits<uintptr_t>::max)() - kListOffset ||
+            !ReadPrivateMemory(wrapper + kListOffset, list, sizeof(list)) ||
+            list[0] == 0 || list[0] % alignof(Entry) != 0 || list[1] == 0 || list[1] > 16)
+            return false;
+
+        uintptr_t links[2]{};
+        if (!ReadPrivateMemory(list[0], links, sizeof(links))) return false;
+        uintptr_t previous = list[0];
+        uintptr_t node = links[0];
+        uintptr_t match = 0;
+        float matchedValue = 0.0f;
+        for (uintptr_t i = 0; i < list[1]; ++i)
+        {
+            Entry entry{};
+            if (node == 0 || node == list[0] || node % alignof(Entry) != 0 ||
+                !ReadPrivateMemory(node, &entry, sizeof(entry)) || entry.previous != previous)
+                return false;
+            if (entry.mode == kMouseMode)
+            {
+                if (match != 0 || !std::isfinite(entry.value) ||
+                    entry.value < kMouseSensitivityRuntimeMinimum || entry.value > kMouseSensitivityRuntimeMaximum)
+                    return false;
+                match = node + kValueOffset;
+                matchedValue = entry.value;
+            }
+            previous = node;
+            node = entry.next;
+        }
+        if (node != list[0] || previous != links[1] || match == 0) return false;
+        address = match;
+        value = matchedValue;
+        return true;
+    }
+
     bool ReadVerifiedMouseSensitivity(uintptr_t options, uintptr_t& owner, uintptr_t& valueAddress,
-        uintptr_t& optionsSlotAddress, float& value)
+        uintptr_t& optionsSlotAddress, float& value, uintptr_t* wrapperAddress = nullptr)
     {
         if (!g_supportedBuild || options == 0 || (options & 7) != 0 ||
             options > (std::numeric_limits<uintptr_t>::max)() - fov::kOptionsSearchBytes)
@@ -614,6 +666,7 @@ namespace
         // object independently of the current FOV target.
         unsigned int matches = 0;
         uintptr_t foundOwner = 0;
+        uintptr_t foundWrapper = 0;
         uintptr_t foundAddress = 0;
         uintptr_t foundSlotAddress = 0;
         float foundValue = 0.0f;
@@ -648,19 +701,16 @@ namespace
                 !MatchOptionString(header[1] + fov::kCaptionOffset, "options.sensitivity", sizeof("options.sensitivity") - 1))
                 continue;
 
-            float values[4]{};
-            if (!ReadPrivateMemory(wrapper + fov::kPatternOffset, values, sizeof(values)) ||
-                !std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2]) ||
-                std::fabs(values[0] - 0.0f) >= kFovMatchTolerance ||
-                std::fabs(values[1] - 1.0f) >= kFovMatchTolerance ||
-                values[2] < kMouseSensitivityRuntimeMinimum || values[2] > kMouseSensitivityRuntimeMaximum)
-                continue;
+            uintptr_t address = 0;
+            float optionValue = 0.0f;
+            if (!ReadMouseSensitivityEntry(wrapper, address, optionValue)) return false;
 
             ++matches;
             foundOwner = header[1];
-            foundAddress = wrapper + fov::kPatternOffset + 2 * sizeof(float);
+            foundWrapper = wrapper;
+            foundAddress = address;
             foundSlotAddress = options + offset;
-            foundValue = values[2];
+            foundValue = optionValue;
         }
 
         if (matches != 1) return false;
@@ -668,6 +718,7 @@ namespace
         valueAddress = foundAddress;
         optionsSlotAddress = foundSlotAddress;
         value = foundValue;
+        if (wrapperAddress) *wrapperAddress = foundWrapper;
         return true;
     }
 
@@ -827,9 +878,9 @@ namespace
 
     TrackedSensitivityValidation ReadTrackedZoomMouseSensitivityWrapper(float& value)
     {
-        if (!g_zoomSensitivity.active || g_zoomSensitivity.valueAddress <
-            fov::kPatternOffset + 2 * sizeof(float)) return TrackedSensitivityValidation::Invalidated;
-        const uintptr_t wrapper = g_zoomSensitivity.valueAddress - fov::kPatternOffset - 2 * sizeof(float);
+        if (!g_zoomSensitivity.active || g_zoomSensitivity.wrapper == 0)
+            return TrackedSensitivityValidation::Invalidated;
+        const uintptr_t wrapper = g_zoomSensitivity.wrapper;
 
         MEMORY_BASIC_INFORMATION memory{};
         if (VirtualQuery(reinterpret_cast<const void*>(wrapper), &memory, sizeof(memory)) == 0 ||
@@ -851,15 +902,11 @@ namespace
             !MatchOptionString(header[1] + fov::kCaptionOffset, "options.sensitivity", sizeof("options.sensitivity") - 1))
             return TrackedSensitivityValidation::RetryableFailure;
 
-        float values[4]{};
-        if (!ReadPrivateMemory(wrapper + fov::kPatternOffset, values, sizeof(values)))
+        uintptr_t address = 0;
+        if (!ReadMouseSensitivityEntry(wrapper, address, value))
             return TrackedSensitivityValidation::RetryableFailure;
-        if (!std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2]) ||
-            std::fabs(values[0] - 0.0f) >= kFovMatchTolerance ||
-            std::fabs(values[1] - 1.0f) >= kFovMatchTolerance ||
-            values[2] < kMouseSensitivityRuntimeMinimum || values[2] > kMouseSensitivityRuntimeMaximum)
+        if (address != g_zoomSensitivity.valueAddress)
             return TrackedSensitivityValidation::Invalidated;
-        value = values[2];
         return TrackedSensitivityValidation::Valid;
     }
 
@@ -872,7 +919,7 @@ namespace
                 fov::kOptionsSearchBytes ||
             g_zoomSensitivity.optionsSlotAddress >= g_zoomSensitivity.target.options + fov::kOptionsSearchBytes ||
             g_zoomSensitivity.optionsSlotAddress % alignof(uintptr_t) != 0 ||
-            g_zoomSensitivity.valueAddress < fov::kPatternOffset + 2 * sizeof(float))
+            g_zoomSensitivity.wrapper == 0)
             return TrackedSensitivityValidation::Invalidated;
 
         uintptr_t optionsVtable = 0;
@@ -882,8 +929,7 @@ namespace
             !ReadPrivateMemory(g_zoomSensitivity.optionsSlotAddress, &wrapper, sizeof(wrapper)))
             return TrackedSensitivityValidation::RetryableFailure;
 
-        const uintptr_t trackedWrapper = g_zoomSensitivity.valueAddress - fov::kPatternOffset - 2 * sizeof(float);
-        if (wrapper != trackedWrapper)
+        if (wrapper != g_zoomSensitivity.wrapper)
         {
             g_zoomSensitivity.bindingLost = true;
             return TrackedSensitivityValidation::Invalidated;
@@ -1068,6 +1114,48 @@ namespace
         return true;
     }
 
+    bool ReadUtf8BomConfig(const std::wstring& path, std::wstring& config)
+    {
+        std::ifstream file(path, std::ios::binary);
+        char bom[3]{};
+        if (!file.read(bom, sizeof(bom)) || std::memcmp(bom, "\xEF\xBB\xBF", sizeof(bom)) != 0)
+            return true;
+
+        const std::string bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        if (bytes.empty()) return true;
+        if (bytes.size() > INT_MAX) return false;
+        const int size = static_cast<int>(bytes.size());
+        const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), size, nullptr, 0);
+        if (length == 0) return false;
+        config.resize(length);
+        return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), size, config.data(), length) == length;
+    }
+
+    bool ReadDecodedConfigValue(const std::wstring& config, const wchar_t* section, const wchar_t* key,
+        std::wstring& value)
+    {
+        std::wistringstream stream(config);
+        bool inSection = false;
+        for (std::wstring line; std::getline(stream, line);)
+        {
+            line = TrimWhitespace(line);
+            if (line.empty() || line.front() == L';' || line.front() == L'#') continue;
+            if (line.front() == L'[' && line.back() == L']')
+            {
+                inSection = _wcsicmp(TrimWhitespace(line.substr(1, line.size() - 2)).c_str(), section) == 0;
+                continue;
+            }
+            const size_t separator = line.find(L'=');
+            if (inSection && separator != std::wstring::npos &&
+                _wcsicmp(TrimWhitespace(line.substr(0, separator)).c_str(), key) == 0)
+            {
+                value = TrimWhitespace(line.substr(separator + 1));
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool ParseVirtualKey(std::wstring value, int& key)
     {
         value = TrimWhitespace(value);
@@ -1140,6 +1228,13 @@ namespace
 
     bool LoadZoomConfigFromPath(const std::wstring& configPath)
     {
+        std::wstring decoded;
+        if (!ReadUtf8BomConfig(configPath, decoded)) return false;
+        const auto readValue = [&](const wchar_t* section, const wchar_t* key, std::wstring& value)
+        {
+            if (!decoded.empty()) return ReadDecodedConfigValue(decoded, section, key, value);
+            return ReadToolkitConfigValue(section, key, value, configPath);
+        };
         ZoomConfig loaded;
         std::wstring value;
         const auto parseFloat = [](const std::wstring& value, float minimum, float maximum, float& target)
@@ -1152,21 +1247,21 @@ namespace
             target = parsed;
             return true;
         };
-        if (ReadToolkitConfigValue(L"Zoom", L"Fov", value, configPath))
+        if (readValue(L"Zoom", L"Fov", value))
         {
             if (!parseFloat(value, kZoomMinimumFov, kZoomMaximumFov, loaded.firstPersonFov)) return false;
             loaded.thirdPersonFov = loaded.firstPersonFov;
         }
         const auto readZoomFloat = [&](const wchar_t* key, float minimum, float maximum, float& target)
         {
-            return !ReadToolkitConfigValue(L"Zoom", key, value, configPath) || parseFloat(value, minimum, maximum, target);
+            return !readValue(L"Zoom", key, value) || parseFloat(value, minimum, maximum, target);
         };
         if (!readZoomFloat(L"FirstPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.firstPersonFov) ||
             !readZoomFloat(L"ThirdPersonFov", kZoomMinimumFov, kZoomMaximumFov, loaded.thirdPersonFov) ||
             !readZoomFloat(L"MouseSensitivity", kMouseSensitivityMinimum, kMouseSensitivityMaximum, loaded.mouseSensitivity) ||
             !readZoomFloat(L"SensitivityScalingStrength", 1.0f, 2.0f, loaded.sensitivityScalingStrength) ||
             !readZoomFloat(L"CameraSmoothingStrength", 1.0f, 10.0f, loaded.cameraSmoothingStrength)) return false;
-        if (ReadToolkitConfigValue(L"Zoom", L"TransitionDurationMs", value, configPath))
+        if (readValue(L"Zoom", L"TransitionDurationMs", value))
         {
             value = TrimWhitespace(value);
             wchar_t* end = nullptr;
@@ -1176,14 +1271,14 @@ namespace
                 return false;
             loaded.transitionDurationMs = parsed;
         }
-        const auto readKey = [&configPath](const wchar_t* name, int& target)
+        const auto readKey = [&readValue](const wchar_t* name, int& target)
         {
             std::wstring keyName;
-            return !ReadToolkitConfigValue(L"Shortcuts", name, keyName, configPath) || ParseVirtualKey(keyName, target);
+            return !readValue(L"Shortcuts", name, keyName) || ParseVirtualKey(keyName, target);
         };
         const auto readBoolean = [&](const wchar_t* section, const wchar_t* key, bool& target)
         {
-            if (!ReadToolkitConfigValue(section, key, value, configPath)) return true;
+            if (!readValue(section, key, value)) return true;
             value = TrimWhitespace(value);
             if (_wcsicmp(value.c_str(), L"true") == 0) target = true;
             else if (_wcsicmp(value.c_str(), L"false") == 0) target = false;
@@ -1192,7 +1287,7 @@ namespace
         };
         if (!readBoolean(L"Zoom", L"CameraSmoothingEnabled", loaded.cameraSmoothingEnabled) ||
             !readBoolean(L"nametag", L"show_when_hud_hidden", loaded.showNametagWhenHudHidden)) return false;
-        if (ReadToolkitConfigValue(L"Compatibility", L"AllowUnsupportedGameVersion", value, configPath))
+        if (readValue(L"Compatibility", L"AllowUnsupportedGameVersion", value))
         {
             value = TrimWhitespace(value);
             if (_wcsicmp(value.c_str(), L"true") == 0) loaded.allowUnsupportedGameVersion = true;
@@ -3103,7 +3198,7 @@ namespace
         sensitivity.target = target;
         LogZoomStatus("mouse-sensitivity-discovery-started");
         sensitivity.active = ReadVerifiedMouseSensitivity(target.options, sensitivity.owner,
-            sensitivity.valueAddress, sensitivity.optionsSlotAddress, sensitivity.originalValue);
+            sensitivity.valueAddress, sensitivity.optionsSlotAddress, sensitivity.originalValue, &sensitivity.wrapper);
         g_nextZoomSensitivityRetryAt = now + kFovRetryDelayMs;
         LogZoomStatus(sensitivity.active ? "mouse-sensitivity-ready" : "mouse-sensitivity-unavailable");
     }

@@ -222,6 +222,17 @@ namespace
         Check(!g_zoomConfig.allowUnsupportedGameVersion, "unsupported game version is refused by default");
         Check(!g_zoomConfig.cameraSmoothingEnabled && g_zoomConfig.cameraSmoothingStrength == 5,
             "existing configurations keep camera rotation smoothing disabled");
+        {
+            TemporaryToolkitConfig utf8Config;
+            std::ofstream file(utf8Config.Path(), std::ios::binary);
+            file << "\xEF\xBB\xBF" "[Zoom]\r\nFirstPersonFov=15.5\r\nThirdPersonFov=28.5\r\n"
+                "MouseSensitivity=12\r\nSensitivityScalingStrength=2\r\n[Shortcuts]\r\nZoom=C\r\n";
+            file.close();
+            Check(file.good() && LoadZoomConfigFromPath(utf8Config.Path()) &&
+                g_zoomConfig.firstPersonFov == 15.5f && g_zoomConfig.thirdPersonFov == 28.5f &&
+                g_zoomConfig.mouseSensitivity == 12.0f && g_zoomConfig.sensitivityScalingStrength == 2.0f &&
+                g_zoomConfig.zoomKey == 'C', "load Zoom settings when the first section follows a UTF-8 BOM");
+        }
         config.Set(L"Zoom", L"CameraSmoothingEnabled", L" TrUe ");
         config.Set(L"Zoom", L"CameraSmoothingStrength", L"7.25");
         Check(LoadZoomConfigFromPath(config.Path()) && g_zoomConfig.cameraSmoothingEnabled &&
@@ -1005,28 +1016,42 @@ namespace
             String(ownerOffset + fov::kDisplayNameOffset, "sensitivity");
             String(ownerOffset + fov::kCaptionOffset, "options.sensitivity");
         }
+        void SetSensitivityEntry(size_t wrapperOffset, float value)
+        {
+            const uintptr_t start = reinterpret_cast<uintptr_t>(memory);
+            const size_t sentinel = wrapperOffset + 0x80;
+            const size_t node = wrapperOffset + 0xa0;
+            Pointer(wrapperOffset + 0x20, start + sentinel);
+            Pointer(wrapperOffset + 0x28, 1);
+            Pointer(sentinel, start + node);
+            Pointer(sentinel + 8, start + node);
+            Pointer(node, start + sentinel);
+            Pointer(node + 8, start + sentinel);
+            const uint32_t mode = 1;
+            std::memcpy(memory + node + 0x10, &mode, sizeof(mode));
+            std::memcpy(memory + node + 0x14, &value, sizeof(value));
+        }
+
+        uintptr_t SensitivityWrapper() const { return reinterpret_cast<uintptr_t>(memory) + 0x2000; }
+
         void AddSensitivity()
         {
             const uintptr_t start = reinterpret_cast<uintptr_t>(memory);
             constexpr size_t wrapperOffset = 0x2000;
-            Pointer(0x190, start + wrapperOffset);
+            Pointer(0x190, SensitivityWrapper());
             sensitivityOptionsSlotAddress = start + 0x190;
             Pointer(wrapperOffset, g_gameModuleBase + fov::kMouseSensitivityVtableRva);
             SetSensitivityOwner(0x2400);
-            const float values[] = {0.0f, 1.0f, 0.50f, 0.0f};
-            std::memcpy(memory + wrapperOffset + fov::kPatternOffset, values, sizeof(values));
-            sensitivityValueAddress = start + wrapperOffset + fov::kPatternOffset + 2 * sizeof(float);
+            SetSensitivityEntry(wrapperOffset, 0.50f);
+            sensitivityValueAddress = start + wrapperOffset + 0xb4;
         }
         void ReplaceSensitivityOptionBinding()
         {
             const uintptr_t start = reinterpret_cast<uintptr_t>(memory);
-            constexpr size_t oldWrapperOffset = 0x2000;
             constexpr size_t replacementWrapperOffset = 0x3000;
-            std::memcpy(memory + replacementWrapperOffset, memory + oldWrapperOffset,
-                fov::kPatternOffset + 4 * sizeof(float));
-            const float replacementValue = 0.8f;
-            std::memcpy(memory + replacementWrapperOffset + fov::kPatternOffset + 2 * sizeof(float),
-                &replacementValue, sizeof(replacementValue));
+            Pointer(replacementWrapperOffset, g_gameModuleBase + fov::kMouseSensitivityVtableRva);
+            Pointer(replacementWrapperOffset + 8, sensitivityOwnerAddress);
+            SetSensitivityEntry(replacementWrapperOffset, 0.8f);
             Pointer(0x190, start + replacementWrapperOffset);
         }
         ~Fixture() { VirtualFree(memory, 0, MEM_RELEASE); }
@@ -1045,7 +1070,11 @@ namespace
         Check(ReadVerifiedMouseSensitivity(fixture.target.options, owner, address, slot, value) &&
             slot == fixture.sensitivityOptionsSlotAddress && value == 0.50f,
             "batched sensitivity scan finds a unique named option");
-        fixture.Pointer(0x400, fixture.sensitivityValueAddress - fov::kPatternOffset - 2 * sizeof(float));
+        fixture.Pointer(0x20a8, fixture.SensitivityWrapper());
+        Check(!ReadVerifiedMouseSensitivity(fixture.target.options, owner, address, slot, value),
+            "sensitivity scan rejects a malformed entry list");
+        fixture.SetSensitivityEntry(0x2000, 0.50f);
+        fixture.Pointer(0x400, fixture.SensitivityWrapper());
         Check(!ReadVerifiedMouseSensitivity(fixture.target.options, owner, address, slot, value),
             "batched sensitivity scan rejects duplicate bindings in different batches");
     }
@@ -1095,7 +1124,7 @@ namespace
         fixture.AddSensitivity();
         g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
             0.50f, 0.12f, true};
-        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;        g_zoomSensitivity.wrapper = fixture.SensitivityWrapper();
         float zoomValue = 0.12f;
         std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomValue, sizeof(zoomValue));
         fixture.Pointer(1032, 0);
@@ -1119,7 +1148,7 @@ namespace
         fixture.AddSensitivity();
         g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
             0.50f, 0.12f, true};
-        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;        g_zoomSensitivity.wrapper = fixture.SensitivityWrapper();
         const float zoomValue = 0.12f;
         std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomValue, sizeof(zoomValue));
 
@@ -1148,7 +1177,7 @@ namespace
         fixture.AddSensitivity();
         g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
             0.50f, 0.12f, true};
-        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;        g_zoomSensitivity.wrapper = fixture.SensitivityWrapper();
         std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &g_zoomSensitivity.zoomValue,
             sizeof(g_zoomSensitivity.zoomValue));
         g_zoom.originalValue = 70.0f;
@@ -1186,7 +1215,7 @@ namespace
             fixture.AddSensitivity();
             g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
                 0.50f, 0.12f, true};
-            g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+            g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;            g_zoomSensitivity.wrapper = fixture.SensitivityWrapper();
             std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &g_zoomSensitivity.zoomValue,
                 sizeof(g_zoomSensitivity.zoomValue));
             fixture.ReplaceSensitivityOptionBinding();
@@ -1207,7 +1236,7 @@ namespace
             fixture.AddSensitivity();
             g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
                 0.50f, 0.12f, true};
-            g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+            g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;            g_zoomSensitivity.wrapper = fixture.SensitivityWrapper();
             std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &g_zoomSensitivity.zoomValue,
                 sizeof(g_zoomSensitivity.zoomValue));
             fixture.ReplaceSensitivityOptionBinding();
@@ -1229,7 +1258,7 @@ namespace
             fixture.AddSensitivity();
             g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
                 0.50f, 0.12f, true};
-            g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+            g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;            g_zoomSensitivity.wrapper = fixture.SensitivityWrapper();
             std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &g_zoomSensitivity.zoomValue,
                 sizeof(g_zoomSensitivity.zoomValue));
             fixture.ReplaceSensitivityOptionBinding();
@@ -1277,7 +1306,7 @@ namespace
 
         g_zoomSensitivity = {fixture.target, fixture.sensitivityOwnerAddress, fixture.sensitivityValueAddress,
             0.50f, 0.12f, true};
-        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;
+        g_zoomSensitivity.optionsSlotAddress = fixture.sensitivityOptionsSlotAddress;        g_zoomSensitivity.wrapper = fixture.SensitivityWrapper();
         const float zoomSensitivity = 0.12f;
         std::memcpy(reinterpret_cast<void*>(fixture.sensitivityValueAddress), &zoomSensitivity,
             sizeof(zoomSensitivity));

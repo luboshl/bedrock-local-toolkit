@@ -68,7 +68,6 @@
                         <Button x:Name="GameActionButton" Content="Starting Minecraft…" MinWidth="165"
                                 IsEnabled="False" Click="OnGameAction" />
                         <Button Content="Open _Log" Click="OnOpenLog" />
-                        <Button Content="Add to _Start menu" Click="OnAddToStartMenu" />
                     </StackPanel>
                     <TextBlock x:Name="ShellFeedback" TextWrapping="Wrap" Margin="0,8,0,0"
                                AutomationProperties.LiveSetting="Polite" />

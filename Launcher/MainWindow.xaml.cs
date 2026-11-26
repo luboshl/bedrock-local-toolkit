@@ -153,20 +153,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnAddToStartMenu(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            StartMenuShortcut.Create();
-            ShellFeedback.Text = "Shortcut saved. Search Start for Bedrock Local Toolkit to open or pin it.";
-        }
-        catch (Exception ex)
-        {
-            LauncherLog.Write($"Start menu shortcut failed: {ex}");
-            ShellFeedback.Text = $"Could not add the Start menu shortcut. {ex.Message}";
-        }
-    }
-
     private void OnReloadSettings(object sender, RoutedEventArgs e) => LoadSettings();
 
     private void LoadSettings()
